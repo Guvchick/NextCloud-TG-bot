@@ -22,6 +22,7 @@ class Config:
     upload_folder: str
     support_telegram: str | None
     support_email: str | None
+    donate_url: str | None
     backup_retention_days: int
     auto_backup_interval_hours: int
     nextcloud_sync_interval_minutes: int
@@ -86,6 +87,7 @@ def load_config() -> Config:
         upload_folder=os.getenv("UPLOAD_FOLDER", "Telegram uploads").strip() or "Telegram uploads",
         support_telegram=_optional("SUPPORT_TELEGRAM"),
         support_email=_optional("SUPPORT_EMAIL"),
+        donate_url=_optional("DONATE_URL"),
         backup_retention_days=_int_env("BACKUP_RETENTION_DAYS", 7),
         auto_backup_interval_hours=_int_env("AUTO_BACKUP_INTERVAL_HOURS", 24),
         nextcloud_sync_interval_minutes=_int_env("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),

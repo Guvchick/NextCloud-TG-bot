@@ -4,11 +4,57 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def account_keyboard() -> InlineKeyboardMarkup:
+def _labels(lang: str) -> dict[str, str]:
+    if lang == "en":
+        return {
+            "change_password": "Change password",
+            "support": "Support",
+            "donate": "Donate",
+            "language": "Language",
+            "home": "Main menu",
+            "back": "Back",
+            "ru": "Русский",
+            "en": "English",
+        }
+    return {
+        "change_password": "Сменить пароль",
+        "support": "Поддержка",
+        "donate": "Донат",
+        "language": "Язык",
+        "home": "Главная",
+        "back": "Назад",
+        "ru": "Русский",
+        "en": "English",
+    }
+
+
+def account_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    labels = _labels(lang)
     builder = InlineKeyboardBuilder()
-    builder.button(text="Сменить пароль", callback_data="account:change_password")
-    builder.button(text="Поддержка", callback_data="account:support")
+    builder.button(text=labels["change_password"], callback_data="account:change_password")
+    builder.button(text=labels["support"], callback_data="account:support")
+    builder.button(text=labels["donate"], callback_data="account:donate")
+    builder.button(text=labels["language"], callback_data="account:language")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def account_back_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=labels["back"], callback_data="account:home")
+    builder.button(text=labels["home"], callback_data="account:home")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def language_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=labels["ru"], callback_data="lang:ru")
+    builder.button(text=labels["en"], callback_data="lang:en")
+    builder.button(text=labels["back"], callback_data="account:home")
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 

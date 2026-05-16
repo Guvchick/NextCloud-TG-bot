@@ -27,6 +27,7 @@ class Database:
                     first_name TEXT,
                     last_name TEXT,
                     status TEXT NOT NULL DEFAULT 'requested',
+                    language TEXT NOT NULL DEFAULT 'ru',
                     nc_user_id TEXT,
                     nc_password TEXT,
                     quota_gb INTEGER NOT NULL DEFAULT 0,
@@ -47,6 +48,7 @@ class Database:
                 """
             )
             await self._ensure_column(db, "users", "nc_password", "TEXT")
+            await self._ensure_column(db, "users", "language", "TEXT NOT NULL DEFAULT 'ru'")
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
@@ -78,15 +80,24 @@ class Database:
                 await db.execute(
                     """
                     INSERT INTO users (
-                        telegram_id, username, first_name, last_name, status,
+                        telegram_id, username, first_name, last_name, status, language,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, 'requested', ?, ?)
+                    VALUES (?, ?, ?, ?, 'requested', 'ru', ?, ?)
                     """,
                     (telegram_id, username, first_name, last_name, now, now),
                 )
             await db.commit()
         return await self.get_user(telegram_id) or {}
+
+    async def set_language(self, telegram_id: int, language: str) -> None:
+        now = utc_now()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET language = ?, updated_at = ? WHERE telegram_id = ?",
+                (language, now, telegram_id),
+            )
+            await db.commit()
 
     async def get_user(self, telegram_id: int) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:

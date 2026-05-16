@@ -15,6 +15,9 @@
 - Есть отключение и включение Nextcloud-пользователя.
 - Пользователь может отправить файл, фото, видео, аудио или документ прямо в бота, а бот загрузит его в Nextcloud.
 - Пользователь сразу видит текущий пароль в `/start` и может сменить его через кнопку.
+- Пользователь может переключить язык интерфейса: русский/английский.
+- Есть кнопка `Донат`.
+- Во вложенных пользовательских разделах есть кнопки возврата назад/на главную.
 - В пользовательском экране всегда видны квота, занятое место и шкала заполнения.
 - Есть ссылка на саппорт в Telegram и email.
 - Есть синхронизация с Nextcloud: если пользователя уже нет в Nextcloud, запись удаляется из базы бота.
@@ -50,6 +53,7 @@ LOG_DIR=logs
 UPLOAD_FOLDER=Telegram uploads
 SUPPORT_TELEGRAM=@support_username
 SUPPORT_EMAIL=support@example.com
+DONATE_URL=https://example.com/donate
 BACKUP_RETENTION_DAYS=7
 AUTO_BACKUP_INTERVAL_HOURS=24
 NEXTCLOUD_SYNC_INTERVAL_MINUTES=60
@@ -82,11 +86,11 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 
 Файлы из Telegram загружаются в корень диска пользователя. `UPLOAD_FOLDER` оставлен как legacy-настройка, но пользовательский сценарий ее не показывает.
 
-`SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю как ссылки для связи с саппортом.
+`SUPPORT_TELEGRAM`, `SUPPORT_EMAIL` и `DONATE_URL` показываются пользователю в отдельных кнопочных разделах.
 
 `TELEGRAM_MAX_DOWNLOAD_MB` - лимит скачивания через Bot API. Если Telegram не дает скачать большой файл, бот заранее объяснит это пользователю и предложит загрузить файл напрямую через Nextcloud.
 
-`STICKER_*` - необязательные кастомные `file_id` стикеров. Если они не заданы или Telegram их отклонит, бот оставит базовые визуальные маркеры в тексте. Настроить можно через `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok`, `/setsticker error`.
+`STICKER_*` - необязательные кастомные `file_id` стикеров. Если они не заданы или Telegram их отклонит, бот оставит базовые визуальные маркеры в тексте. Настроить можно через `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok`, `/setsticker error`, `/setsticker support`, `/setsticker donate`, `/setsticker language`, `/setsticker password`.
 
 ## Запуск локально
 

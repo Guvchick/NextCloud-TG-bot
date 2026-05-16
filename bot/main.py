@@ -30,6 +30,7 @@ from bot.backups import (
 from bot.config import Config, load_config
 from bot.db import Database
 from bot.keyboards import (
+    account_back_keyboard,
     account_keyboard,
     admin_keyboard,
     backup_keyboard,
@@ -37,6 +38,7 @@ from bot.keyboards import (
     delete_confirm_keyboard,
     request_review_keyboard,
     restore_backup_keyboard,
+    language_keyboard,
     user_keyboard,
     users_keyboard,
 )
@@ -84,6 +86,106 @@ def valid_password(password: str) -> bool:
     return len(password) >= 8 and len(password) <= 128 and not password.isspace()
 
 
+TEXT = {
+    "ru": {
+        "account_title": "Ваш Nextcloud-диск",
+        "server": "Сервер",
+        "login": "Логин",
+        "password": "Пароль",
+        "password_missing": "не сохранен",
+        "quota": "Квота",
+        "upload_hint": "Отправьте файл в этот чат, и бот загрузит его в Nextcloud.",
+        "support": "Саппорт",
+        "support_title": "Поддержка",
+        "support_empty": "Контакты поддержки пока не настроены.",
+        "donate_title": "Донат",
+        "donate_empty": "Ссылка на донат пока не настроена.",
+        "donate_text": "Поддержать проект можно по ссылке ниже.",
+        "language_title": "Выберите язык",
+        "language_saved": "Язык сохранен.",
+        "change_password_prompt": "Отправьте новый пароль для Nextcloud.\n\nМинимум 8 символов. После смены бот обновит сохраненный пароль для загрузок.",
+        "password_invalid": "Пароль должен быть от 8 до 128 символов.",
+        "password_changed": "Пароль сменен.",
+        "password_change_failed": "Не удалось сменить пароль",
+        "access_inactive": "Доступ не активен.",
+        "upload_not_allowed": "Загрузка доступна только одобренным активным пользователям.",
+        "webdav_password_missing": "Для этого аккаунта нет сохраненного WebDAV-пароля. Попросите администратора сбросить пароль в панели.",
+        "file_unknown": "Не удалось определить файл для загрузки.",
+        "file_too_big": "Telegram не дает боту скачать этот файл: он больше <b>{limit} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс Nextcloud.",
+        "uploading": "Загружаю <b>{filename}</b> ({size}) в Nextcloud...",
+        "uploaded": "Файл загружен",
+        "path": "Путь",
+        "telegram_download_failed": "Telegram не дает боту скачать этот файл.\n\nЛимит для загрузки через бота: <b>{limit} MB</b>.\nЗагрузите большой файл напрямую через Nextcloud.",
+        "upload_failed": "Не удалось загрузить файл в Nextcloud",
+        "processing_failed": "Не удалось обработать файл",
+        "approved_title": "Ваша заявка одобрена",
+        "approved_hint": "Файлы можно отправлять прямо сюда: бот загрузит их в Nextcloud.\nПароль всегда виден в /start, там же его можно сменить.",
+        "request_sent_title": "Заявка отправлена",
+        "request_sent": "Администратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов.",
+        "request_rejected": "Ваша заявка на beta-тест сейчас отклонена.",
+        "account_missing": "Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.",
+        "used": "Занято",
+        "available": "Доступно",
+        "free": "свободно",
+        "unknown": "неизвестно",
+        "usage_failed": "не удалось обновить",
+    },
+    "en": {
+        "account_title": "Your Nextcloud Drive",
+        "server": "Server",
+        "login": "Login",
+        "password": "Password",
+        "password_missing": "not saved",
+        "quota": "Quota",
+        "upload_hint": "Send a file to this chat and the bot will upload it to Nextcloud.",
+        "support": "Support",
+        "support_title": "Support",
+        "support_empty": "Support contacts are not configured yet.",
+        "donate_title": "Donate",
+        "donate_empty": "Donation link is not configured yet.",
+        "donate_text": "You can support the project using the link below.",
+        "language_title": "Choose language",
+        "language_saved": "Language saved.",
+        "change_password_prompt": "Send a new Nextcloud password.\n\nMinimum 8 characters. The bot will update the saved password for uploads.",
+        "password_invalid": "Password must be 8 to 128 characters.",
+        "password_changed": "Password changed.",
+        "password_change_failed": "Could not change password",
+        "access_inactive": "Access is not active.",
+        "upload_not_allowed": "Uploads are available only to approved active users.",
+        "webdav_password_missing": "No saved WebDAV password for this account. Ask an admin to reset the password.",
+        "file_unknown": "Could not detect a file to upload.",
+        "file_too_big": "Telegram does not allow the bot to download this file: it is larger than <b>{limit} MB</b>.\n\nUpload large files directly through the Nextcloud web interface.",
+        "uploading": "Uploading <b>{filename}</b> ({size}) to Nextcloud...",
+        "uploaded": "File uploaded",
+        "path": "Path",
+        "telegram_download_failed": "Telegram does not allow the bot to download this file.\n\nBot upload limit: <b>{limit} MB</b>.\nUpload large files directly through Nextcloud.",
+        "upload_failed": "Could not upload file to Nextcloud",
+        "processing_failed": "Could not process file",
+        "approved_title": "Your request was approved",
+        "approved_hint": "You can send files here and the bot will upload them to Nextcloud.\nYour password is always visible in /start, and you can change it there.",
+        "request_sent_title": "Request sent",
+        "request_sent": "The administrator will review beta access. I will notify you when the account is ready.",
+        "request_rejected": "Your beta-test request is currently rejected.",
+        "account_missing": "The account was not found in Nextcloud, so the bot record was cleared. Send /start again.",
+        "used": "Used",
+        "available": "Available",
+        "free": "free",
+        "unknown": "unknown",
+        "usage_failed": "could not refresh",
+    },
+}
+
+
+def lang_of(user: dict | None) -> str:
+    language = (user or {}).get("language") or "ru"
+    return language if language in TEXT else "ru"
+
+
+def tr(lang: str, key: str, **kwargs) -> str:
+    value = TEXT.get(lang, TEXT["ru"]).get(key, TEXT["ru"].get(key, key))
+    return value.format(**kwargs) if kwargs else value
+
+
 def event_mark(event: str) -> str:
     return {
         "welcome": "☁️",
@@ -92,6 +194,10 @@ def event_mark(event: str) -> str:
         "error": "⚠️",
         "sync": "🔄",
         "backup": "🗄️",
+        "support": "💬",
+        "donate": "💙",
+        "language": "🌐",
+        "password": "🔐",
     }.get(event, "•")
 
 
@@ -133,8 +239,8 @@ def telegram_download_limit_bytes(config: Config) -> int:
     return config.telegram_max_download_mb * 1024 * 1024
 
 
-def support_text(config: Config) -> str:
-    lines = ["<b>Поддержка</b>", ""]
+def support_text(config: Config, lang: str = "ru") -> str:
+    lines = [f"<b>{tr(lang, 'support_title')}</b>", ""]
     if config.support_telegram:
         telegram = config.support_telegram.strip()
         if telegram.startswith("http://") or telegram.startswith("https://"):
@@ -145,8 +251,18 @@ def support_text(config: Config) -> str:
     if config.support_email:
         lines.append(f'Email: <a href="mailto:{html.escape(config.support_email)}">{html.escape(config.support_email)}</a>')
     if len(lines) == 2:
-        lines.append("Контакты поддержки пока не настроены.")
+        lines.append(tr(lang, "support_empty"))
     return "\n".join(lines)
+
+
+def donate_text(config: Config, lang: str = "ru") -> str:
+    if not config.donate_url:
+        return f"<b>{tr(lang, 'donate_title')}</b>\n\n{tr(lang, 'donate_empty')}"
+    return (
+        f"<b>{tr(lang, 'donate_title')}</b>\n\n"
+        f"{tr(lang, 'donate_text')}\n"
+        f'<a href="{html.escape(config.donate_url)}">{html.escape(config.donate_url)}</a>'
+    )
 
 
 def format_bytes(value: int | None) -> str:
@@ -177,39 +293,40 @@ def usage_bar(used: int | None, available: int | None, width: int = 12) -> str:
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
-async def storage_text(user: dict, nc: NextcloudClient) -> str:
+async def storage_text(user: dict, nc: NextcloudClient, lang: str = "ru") -> str:
     if not user.get("nc_user_id") or not user.get("nc_password"):
-        return "Занято: <b>нет данных</b>"
+        return f"{tr(lang, 'used')}: <b>{tr(lang, 'unknown')}</b>"
     try:
         quota = await nc.get_quota(user["nc_user_id"], user["nc_password"])
     except Exception as exc:
         logging.warning("Failed to fetch quota for %s: %s", user["telegram_id"], exc)
-        return "Занято: <b>не удалось обновить</b>"
+        return f"{tr(lang, 'used')}: <b>{tr(lang, 'usage_failed')}</b>"
 
     used = quota["used"]
     available = quota["available"]
     total = used + available if used is not None and available is not None and available >= 0 else None
     if used == 0 and available is not None and available >= 0:
         return (
-            f"Занято: <b>0 B</b>\n"
-            f"Доступно: <b>{format_bytes(available)}</b>\n"
+            f"{tr(lang, 'used')}: <b>0 B</b>\n"
+            f"{tr(lang, 'available')}: <b>{format_bytes(available)}</b>\n"
             f"<code>{usage_bar(used, available)}</code> 0.0%"
         )
     if total:
         percent = used / total * 100 if used is not None else 0
         return (
-            f"Занято: <b>{format_bytes(used)}</b> из <b>{format_bytes(total)}</b>\n"
+            f"{tr(lang, 'used')}: <b>{format_bytes(used)}</b> / <b>{format_bytes(total)}</b>\n"
             f"<code>{usage_bar(used, available)}</code> {percent:.1f}%"
         )
-    return f"Занято: <b>{format_bytes(used)}</b>, свободно: <b>{format_bytes(available)}</b>"
+    return f"{tr(lang, 'used')}: <b>{format_bytes(used)}</b>, {tr(lang, 'free')}: <b>{format_bytes(available)}</b>"
 
 
 async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
+    lang = lang_of(user)
     password = user.get("nc_password")
     password_line = (
-        f"Пароль: <code>{html.escape(password)}</code>\n"
+        f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
         if password
-        else "Пароль: <b>не сохранен</b>\n"
+        else f"{tr(lang, 'password')}: <b>{tr(lang, 'password_missing')}</b>\n"
     )
     support_parts = []
     if config.support_telegram:
@@ -221,17 +338,17 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
             support_parts.append(f'<a href="https://t.me/{html.escape(username)}">@{html.escape(username)}</a>')
     if config.support_email:
         support_parts.append(f'<a href="mailto:{html.escape(config.support_email)}">{html.escape(config.support_email)}</a>')
-    support_line = "\nСаппорт: " + " | ".join(support_parts) if support_parts else ""
+    support_line = f"\n{tr(lang, 'support')}: " + " | ".join(support_parts) if support_parts else ""
     return (
-        f"{event_mark('welcome')} <b>Ваш Nextcloud-диск</b>\n"
+        f"{event_mark('welcome')} <b>{tr(lang, 'account_title')}</b>\n"
         "<code>--------------------------------</code>\n\n"
-        f"Сервер: <b>{html.escape(config.nextcloud_url)}</b>\n"
-        f"Логин: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
+        f"{tr(lang, 'server')}: <b>{html.escape(config.nextcloud_url)}</b>\n"
+        f"{tr(lang, 'login')}: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
         f"{password_line}"
-        f"Квота: <b>{user['quota_gb']} GB</b>\n"
+        f"{tr(lang, 'quota')}: <b>{user['quota_gb']} GB</b>\n"
         "\n"
-        f"{await storage_text(user, nc)}\n\n"
-        f"Отправьте файл в этот чат, и бот загрузит его в Nextcloud.{support_line}"
+        f"{await storage_text(user, nc, lang)}\n\n"
+        f"{tr(lang, 'upload_hint')}{support_line}"
     )
 
 
@@ -344,18 +461,16 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
             await message.answer("Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.")
             return
         await send_event_sticker(bot, db, config, message.chat.id, "welcome")
-        await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard())
+        await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard(lang_of(user)))
         logging.info("Approved user opened account panel: telegram_id=%s", telegram_id)
         return
 
     if user["status"] == "rejected":
-        await message.answer("Ваша заявка на beta-тест сейчас отклонена.")
+        await message.answer(tr(lang_of(user), "request_rejected"))
         return
 
-    await message.answer(
-        "<b>Заявка отправлена</b>\n\n"
-        "Администратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов."
-    )
+    lang = lang_of(user)
+    await message.answer(f"<b>{tr(lang, 'request_sent_title')}</b>\n\n{tr(lang, 'request_sent')}")
     logging.info("Beta request created/updated: telegram_id=%s username=%s", telegram_id, message.from_user.username)
     admin_text = (
         "<b>Новая заявка на beta-тест</b>\n"
@@ -417,12 +532,20 @@ async def stickers_text(db: Database, config: Config) -> str:
         f"welcome: <b>{'кастомный' if settings.get('sticker_welcome') or config.sticker_welcome else 'базовый'}</b> {event_mark('welcome')}\n"
         f"approved: <b>{'кастомный' if settings.get('sticker_approved') or config.sticker_approved else 'базовый'}</b> {event_mark('approved')}\n"
         f"upload_ok: <b>{'кастомный' if settings.get('sticker_upload_ok') or config.sticker_upload_ok else 'базовый'}</b> {event_mark('upload_ok')}\n"
-        f"error: <b>{'кастомный' if settings.get('sticker_error') or config.sticker_error else 'базовый'}</b> {event_mark('error')}\n\n"
+        f"error: <b>{'кастомный' if settings.get('sticker_error') or config.sticker_error else 'базовый'}</b> {event_mark('error')}\n"
+        f"support: <b>{'кастомный' if settings.get('sticker_support') else 'базовый'}</b> {event_mark('support')}\n"
+        f"donate: <b>{'кастомный' if settings.get('sticker_donate') else 'базовый'}</b> {event_mark('donate')}\n"
+        f"language: <b>{'кастомный' if settings.get('sticker_language') else 'базовый'}</b> {event_mark('language')}\n"
+        f"password: <b>{'кастомный' if settings.get('sticker_password') else 'базовый'}</b> {event_mark('password')}\n\n"
         "Команды настройки:\n"
         "<code>/setsticker welcome</code>\n"
         "<code>/setsticker approved</code>\n"
         "<code>/setsticker upload_ok</code>\n"
-        "<code>/setsticker error</code>\n\n"
+        "<code>/setsticker error</code>\n"
+        "<code>/setsticker support</code>\n"
+        "<code>/setsticker donate</code>\n"
+        "<code>/setsticker language</code>\n"
+        "<code>/setsticker password</code>\n\n"
         "После команды отправьте нужный стикер."
     )
 
@@ -448,8 +571,9 @@ async def set_sticker_command(message: Message, state: FSMContext, config: Confi
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
     parts = (message.text or "").split(maxsplit=1)
-    if len(parts) != 2 or parts[1].strip() not in {"welcome", "approved", "upload_ok", "error"}:
-        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error</code>")
+    allowed = {"welcome", "approved", "upload_ok", "error", "support", "donate", "language", "password"}
+    if len(parts) != 2 or parts[1].strip() not in allowed:
+        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|language|password</code>")
         return
     event = parts[1].strip()
     await state.set_state(StickerState.waiting_sticker)
@@ -469,8 +593,61 @@ async def save_sticker(message: Message, state: FSMContext, db: Database, config
 
 
 @router.callback_query(F.data == "account:support")
-async def account_support(callback: CallbackQuery, config: Config) -> None:
-    await callback.message.answer(support_text(config))
+async def account_support(callback: CallbackQuery, bot: Bot, db: Database, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    await send_event_sticker(bot, db, config, callback.message.chat.id, "support")
+    await safe_edit_text(callback.message, support_text(config, lang), reply_markup=account_back_keyboard(lang))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "account:donate")
+async def account_donate(callback: CallbackQuery, bot: Bot, db: Database, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    await send_event_sticker(bot, db, config, callback.message.chat.id, "donate")
+    await safe_edit_text(callback.message, donate_text(config, lang), reply_markup=account_back_keyboard(lang))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "account:language")
+async def account_language(callback: CallbackQuery, bot: Bot, db: Database, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    await send_event_sticker(bot, db, config, callback.message.chat.id, "language")
+    await safe_edit_text(
+        callback.message,
+        f"<b>{tr(lang, 'language_title')}</b>",
+        reply_markup=language_keyboard(lang),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lang:"))
+async def account_set_language(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
+    language = callback.data.split(":", 1)[1]
+    if language not in {"ru", "en"}:
+        await callback.answer("Invalid language", show_alert=True)
+        return
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("No account", show_alert=True)
+        return
+    await db.set_language(callback.from_user.id, language)
+    user = await db.get_user(callback.from_user.id)
+    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_keyboard(language))
+    await callback.answer(tr(language, "language_saved"))
+
+
+@router.callback_query(F.data == "account:home")
+async def account_home(callback: CallbackQuery, state: FSMContext, db: Database, nc: NextcloudClient, config: Config) -> None:
+    await state.clear()
+    user = await db.get_user(callback.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer(tr(lang_of(user), "access_inactive"), show_alert=True)
+        return
+    lang = lang_of(user)
+    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_keyboard(lang))
     await callback.answer()
 
 
@@ -499,13 +676,14 @@ async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient,
 @router.callback_query(F.data == "account:change_password")
 async def account_change_password(callback: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
     user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
     if not user or user["status"] != "approved" or user["is_disabled"]:
-        await callback.answer("Доступ не активен", show_alert=True)
+        await callback.answer(tr(lang, "access_inactive"), show_alert=True)
         return
     await state.set_state(UserPasswordState.waiting_password)
     await callback.message.answer(
-        "Отправьте новый пароль для Nextcloud.\n\n"
-        "Минимум 8 символов. После смены бот обновит сохраненный пароль для загрузок."
+        tr(lang, "change_password_prompt"),
+        reply_markup=account_back_keyboard(lang),
     )
     await callback.answer()
 
@@ -522,30 +700,31 @@ async def account_change_password_apply(
     if not message.from_user:
         return
     user = await db.get_user(message.from_user.id)
+    lang = lang_of(user)
     if not user or user["status"] != "approved" or user["is_disabled"] or not user.get("nc_user_id"):
         await state.clear()
-        await message.answer("Доступ не активен.")
+        await message.answer(tr(lang, "access_inactive"))
         return
 
     password = (message.text or "").strip()
     if not valid_password(password):
-        await message.answer("Пароль должен быть от 8 до 128 символов.")
+        await message.answer(tr(lang, "password_invalid"), reply_markup=account_back_keyboard(lang))
         return
 
     try:
         await nc.set_user_value(user["nc_user_id"], "password", password)
     except NextcloudError as exc:
-        await message.answer(f"Не удалось сменить пароль: <code>{html.escape(str(exc))}</code>")
+        await message.answer(f"{event_mark('error')} {tr(lang, 'password_change_failed')}: <code>{html.escape(str(exc))}</code>")
         return
 
     await db.set_nextcloud_password(user["telegram_id"], password)
     await state.clear()
-    await send_event_sticker(bot, db, config, message.chat.id, "approved")
+    await send_event_sticker(bot, db, config, message.chat.id, "password")
     await message.answer(
-        f"{event_mark('approved')} Пароль сменен.\n\n"
-        f"Логин: <code>{html.escape(user['nc_user_id'])}</code>\n"
-        f"Новый пароль: <code>{html.escape(password)}</code>",
-        reply_markup=account_keyboard(),
+        f"{event_mark('approved')} {tr(lang, 'password_changed')}\n\n"
+        f"{tr(lang, 'login')}: <code>{html.escape(user['nc_user_id'])}</code>\n"
+        f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>",
+        reply_markup=account_keyboard(lang),
     )
 
 
@@ -555,18 +734,17 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         return
 
     user = await db.get_user(message.from_user.id)
+    lang = lang_of(user)
     if not user or user["status"] != "approved" or user["is_disabled"]:
-        await message.answer("Загрузка доступна только одобренным активным пользователям.")
+        await message.answer(tr(lang, "upload_not_allowed"))
         return
     if not user.get("nc_user_id") or not user.get("nc_password"):
-        await message.answer(
-            "Для этого аккаунта нет сохраненного WebDAV-пароля. Попросите администратора сбросить пароль в панели."
-        )
+        await message.answer(tr(lang, "webdav_password_missing"))
         return
 
     target = upload_target_from_message(message)
     if not target:
-        await message.answer("Не удалось определить файл для загрузки.")
+        await message.answer(tr(lang, "file_unknown"))
         return
     file_id, filename, file_size = target
     max_download = telegram_download_limit_bytes(config)
@@ -580,13 +758,11 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         )
         await send_event_sticker(bot, db, config, message.chat.id, "error")
         await message.answer(
-            f"{event_mark('error')} Telegram не дает боту скачать этот файл: он больше "
-            f"<b>{config.telegram_max_download_mb} MB</b>.\n\n"
-            "Загрузите большой файл напрямую через веб-интерфейс Nextcloud."
+            f"{event_mark('error')} {tr(lang, 'file_too_big', limit=config.telegram_max_download_mb)}"
         )
         return
     status_message = await message.answer(
-        f"Загружаю <b>{html.escape(filename)}</b> ({format_bytes(file_size)}) в Nextcloud..."
+        tr(lang, "uploading", filename=html.escape(filename), size=format_bytes(file_size))
     )
 
     temp_file = tempfile.NamedTemporaryFile(prefix="tg-nextcloud-", delete=False)
@@ -595,28 +771,25 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
     try:
         await bot.download(file_id, destination=temp_path)
         remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], "", filename, temp_path)
-        updated_storage = await storage_text(user, nc)
         logging.info("Upload completed: telegram_id=%s remote_path=%s size=%s", user["telegram_id"], remote_path, file_size)
         await send_event_sticker(bot, db, config, message.chat.id, "upload_ok")
         await status_message.edit_text(
-            f"{event_mark('upload_ok')} <b>Файл загружен</b>\n\n"
-            f"Путь: <code>{html.escape(remote_path)}</code>\n\n"
-            f"{updated_storage}"
+            f"{event_mark('upload_ok')} <b>{tr(lang, 'uploaded')}</b>\n\n"
+            f"{tr(lang, 'path')}: <code>{html.escape(remote_path)}</code>\n\n"
+            f"{await storage_text(user, nc, lang)}"
         )
     except NextcloudError as exc:
         logging.warning("Upload failed for telegram_id=%s filename=%s: %s", user["telegram_id"], filename, exc)
         await send_event_sticker(bot, db, config, message.chat.id, "error")
-        await status_message.edit_text(f"{event_mark('error')} Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
+        await status_message.edit_text(f"{event_mark('error')} {tr(lang, 'upload_failed')}: <code>{html.escape(str(exc))}</code>")
     except TelegramBadRequest as exc:
         logging.warning("Telegram refused file download: telegram_id=%s filename=%s size=%s: %s", user["telegram_id"], filename, file_size, exc)
         await status_message.edit_text(
-            f"{event_mark('error')} Telegram не дает боту скачать этот файл.\n\n"
-            f"Лимит для загрузки через бота: <b>{config.telegram_max_download_mb} MB</b>.\n"
-            "Загрузите большой файл напрямую через Nextcloud."
+            f"{event_mark('error')} {tr(lang, 'telegram_download_failed', limit=config.telegram_max_download_mb)}"
         )
     except Exception as exc:
         logging.exception("Failed to upload Telegram file to Nextcloud")
-        await status_message.edit_text(f"Не удалось обработать файл: <code>{html.escape(str(exc))}</code>")
+        await status_message.edit_text(f"{tr(lang, 'processing_failed')}: <code>{html.escape(str(exc))}</code>")
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -652,19 +825,20 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         return
 
     await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
+    user = await db.get_user(telegram_id)
+    lang = lang_of(user)
     logging.info("User approved: telegram_id=%s nc_user_id=%s quota_gb=%s", telegram_id, nc_user_id, config.default_quota_gb)
     await send_event_sticker(bot, db, config, telegram_id, "approved")
     await bot.send_message(
         telegram_id,
-        f"{event_mark('approved')} <b>Ваша заявка одобрена</b>\n"
+        f"{event_mark('approved')} <b>{tr(lang, 'approved_title')}</b>\n"
         "<code>--------------------------------</code>\n\n"
         f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
-        f"Логин: <code>{nc_user_id}</code>\n"
-        f"Пароль: <code>{html.escape(password)}</code>\n"
-        f"Место на диске: <b>{config.default_quota_gb} GB</b>\n\n"
-        "Файлы можно отправлять прямо сюда: бот загрузит их в Nextcloud.\n"
-        "Пароль всегда виден в /start, там же его можно сменить.",
-        reply_markup=account_keyboard(),
+        f"{tr(lang, 'login')}: <code>{nc_user_id}</code>\n"
+        f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
+        f"{tr(lang, 'quota')}: <b>{config.default_quota_gb} GB</b>\n\n"
+        f"{tr(lang, 'approved_hint')}",
+        reply_markup=account_keyboard(lang),
     )
     await safe_edit_text(
         callback.message,
@@ -679,10 +853,12 @@ async def reject_user(callback: CallbackQuery, bot: Bot, db: Database, config: C
         await callback.answer("Нет доступа", show_alert=True)
         return
     telegram_id = int(callback.data.split(":", 1)[1])
+    user = await db.get_user(telegram_id)
+    lang = lang_of(user)
     await db.reject_user(telegram_id)
     logging.info("User rejected: telegram_id=%s", telegram_id)
     try:
-        await bot.send_message(telegram_id, "Ваша заявка на beta-тест отклонена.")
+        await bot.send_message(telegram_id, tr(lang, "request_rejected"))
     except Exception:
         logging.exception("Failed to notify rejected user %s", telegram_id)
     await safe_edit_text(callback.message, f"Заявка пользователя <code>{telegram_id}</code> отклонена.")
