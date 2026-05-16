@@ -28,6 +28,7 @@ class Database:
                     last_name TEXT,
                     status TEXT NOT NULL DEFAULT 'requested',
                     nc_user_id TEXT,
+                    nc_password TEXT,
                     quota_gb INTEGER NOT NULL DEFAULT 0,
                     is_disabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -36,7 +37,14 @@ class Database:
                 )
                 """
             )
+            await self._ensure_column(db, "users", "nc_password", "TEXT")
             await db.commit()
+
+    async def _ensure_column(self, db: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if column not in columns:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     async def upsert_request(
         self,
@@ -81,7 +89,7 @@ class Database:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def approve_user(self, telegram_id: int, nc_user_id: str, quota_gb: int) -> None:
+    async def approve_user(self, telegram_id: int, nc_user_id: str, nc_password: str, quota_gb: int) -> None:
         now = utc_now()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -89,13 +97,23 @@ class Database:
                 UPDATE users
                 SET status = 'approved',
                     nc_user_id = ?,
+                    nc_password = ?,
                     quota_gb = ?,
                     is_disabled = 0,
                     approved_at = COALESCE(approved_at, ?),
                     updated_at = ?
                 WHERE telegram_id = ?
                 """,
-                (nc_user_id, quota_gb, now, now, telegram_id),
+                (nc_user_id, nc_password, quota_gb, now, now, telegram_id),
+            )
+            await db.commit()
+
+    async def set_nextcloud_password(self, telegram_id: int, nc_password: str) -> None:
+        now = utc_now()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET nc_password = ?, updated_at = ? WHERE telegram_id = ?",
+                (nc_password, now, telegram_id),
             )
             await db.commit()
 
@@ -124,6 +142,11 @@ class Database:
                 "UPDATE users SET is_disabled = ?, updated_at = ? WHERE telegram_id = ?",
                 (1 if is_disabled else 0, now, telegram_id),
             )
+            await db.commit()
+
+    async def delete_user(self, telegram_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
             await db.commit()
 
     async def list_users(self, status: str | None = None, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
@@ -171,6 +194,8 @@ class Database:
     async def export_users_json(self, output_path: Path) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         users = await self.list_users(limit=100000, offset=0)
+        for user in users:
+            user.pop("nc_password", None)
         output_path.write_text(
             json.dumps({"generated_at": utc_now(), "users": users}, ensure_ascii=False, indent=2),
             encoding="utf-8",

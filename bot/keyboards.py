@@ -49,6 +49,7 @@ def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: st
     if status == "requested":
         builder.button(text="Отклонить", callback_data=f"reject:{telegram_id}")
     if status == "approved":
+        builder.button(text="Обновить место", callback_data=f"refreshusage:{telegram_id}")
         builder.button(text="+1GB", callback_data=f"quotaadd:{telegram_id}:1")
         builder.button(text="+5GB", callback_data=f"quotaadd:{telegram_id}:5")
         builder.button(text="+10GB", callback_data=f"quotaadd:{telegram_id}:10")
@@ -58,8 +59,17 @@ def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: st
             builder.button(text="Включить", callback_data=f"enable:{telegram_id}")
         else:
             builder.button(text="Отключить", callback_data=f"disable:{telegram_id}")
+        builder.button(text="Удалить", callback_data=f"deleteask:{telegram_id}")
     builder.button(text="Назад", callback_data=f"users:{back_status}:{back_page}")
-    builder.adjust(2, 3, 1, 1, 1)
+    builder.adjust(2, 1, 3, 1, 1, 1, 1)
+    return builder.as_markup()
+
+
+def delete_confirm_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Да, удалить", callback_data=f"deleteyes:{telegram_id}")
+    builder.button(text="Отмена", callback_data=f"user:{telegram_id}:all:0")
+    builder.adjust(1)
     return builder.as_markup()
 
 

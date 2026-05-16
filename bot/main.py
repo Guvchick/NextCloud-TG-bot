@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import secrets
 import string
+import tempfile
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -22,6 +25,7 @@ from bot.keyboards import (
     admin_keyboard,
     backup_keyboard,
     broadcast_confirm_keyboard,
+    delete_confirm_keyboard,
     request_review_keyboard,
     user_keyboard,
     users_keyboard,
@@ -58,13 +62,105 @@ def generate_password(length: int = 18) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def format_bytes(value: int | None) -> str:
+    if value is None:
+        return "неизвестно"
+    if value < 0:
+        return {
+            -1: "не рассчитано",
+            -2: "неизвестно",
+            -3: "без лимита",
+        }.get(value, "неизвестно")
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{value} B"
+
+
+def usage_bar(used: int | None, available: int | None, width: int = 12) -> str:
+    if used is None or available is None:
+        return "[" + "-" * width + "]"
+    total = used + available
+    if total <= 0:
+        return "[" + "-" * width + "]"
+    filled = min(width, max(0, round((used / total) * width)))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+async def storage_text(user: dict, nc: NextcloudClient) -> str:
+    if not user.get("nc_user_id") or not user.get("nc_password"):
+        return "Занято: <b>нет данных</b>"
+    try:
+        quota = await nc.get_quota(user["nc_user_id"], user["nc_password"])
+    except NextcloudError as exc:
+        logging.warning("Failed to fetch quota for %s: %s", user["telegram_id"], exc)
+        return "Занято: <b>не удалось обновить</b>"
+
+    used = quota["used"]
+    available = quota["available"]
+    total = used + available if used is not None and available is not None and available >= 0 else None
+    if total:
+        percent = used / total * 100 if used is not None else 0
+        return (
+            f"Занято: <b>{format_bytes(used)}</b> из <b>{format_bytes(total)}</b>\n"
+            f"<code>{usage_bar(used, available)}</code> {percent:.1f}%"
+        )
+    return f"Занято: <b>{format_bytes(used)}</b>, свободно: <b>{format_bytes(available)}</b>"
+
+
+def clean_filename(filename: str) -> str:
+    filename = Path(filename).name.strip()
+    filename = re.sub(r"[^A-Za-z0-9А-Яа-я._ -]+", "_", filename)
+    filename = re.sub(r"\s+", " ", filename).strip(" .")
+    return filename[:120] or "upload.bin"
+
+
+def upload_target_from_message(message: Message) -> tuple[str, str, int] | None:
+    if message.document:
+        return (
+            message.document.file_id,
+            clean_filename(message.document.file_name or f"document_{message.message_id}.bin"),
+            message.document.file_size or 0,
+        )
+    if message.photo:
+        photo = message.photo[-1]
+        return (photo.file_id, f"photo_{message.message_id}.jpg", photo.file_size or 0)
+    if message.video:
+        return (
+            message.video.file_id,
+            clean_filename(message.video.file_name or f"video_{message.message_id}.mp4"),
+            message.video.file_size or 0,
+        )
+    if message.audio:
+        return (
+            message.audio.file_id,
+            clean_filename(message.audio.file_name or f"audio_{message.message_id}.mp3"),
+            message.audio.file_size or 0,
+        )
+    if message.voice:
+        return (message.voice.file_id, f"voice_{message.message_id}.ogg", message.voice.file_size or 0)
+    if message.video_note:
+        return (message.video_note.file_id, f"video_note_{message.message_id}.mp4", message.video_note.file_size or 0)
+    if message.animation:
+        return (
+            message.animation.file_id,
+            clean_filename(message.animation.file_name or f"animation_{message.message_id}.mp4"),
+            message.animation.file_size or 0,
+        )
+    return None
+
+
 async def admin_summary_text(db: Database) -> str:
     total = await db.count_users()
     requested = await db.count_users("requested")
     approved = await db.count_users("approved")
     rejected = await db.count_users("rejected")
     return (
-        "<b>Админ-панель</b>\n\n"
+        "<b>Админ-панель Nextcloud</b>\n"
+        "<code>--------------------------------</code>\n\n"
         f"Всего пользователей: <b>{total}</b>\n"
         f"Заявок: <b>{requested}</b>\n"
         f"Одобрено: <b>{approved}</b>\n"
@@ -81,7 +177,7 @@ async def notify_admins(bot: Bot, config: Config, text: str, reply_markup=None) 
 
 
 @router.message(CommandStart())
-async def start(message: Message, bot: Bot, db: Database, config: Config) -> None:
+async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user:
         return
 
@@ -99,11 +195,13 @@ async def start(message: Message, bot: Bot, db: Database, config: Config) -> Non
 
     if user["status"] == "approved":
         await message.answer(
-            "Ваш beta-доступ уже активен.\n\n"
+            "<b>Ваш beta-доступ активен</b>\n"
+            "<code>--------------------------------</code>\n\n"
             f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
             f"Логин: <code>{telegram_id}</code>\n"
             f"Квота: <b>{user['quota_gb']} GB</b>\n\n"
-            "Если нужен новый пароль, напишите администратору."
+            f"{await storage_text(user, nc)}\n\n"
+            "Чтобы загрузить файл на сервер, просто отправьте его сюда."
         )
         return
 
@@ -111,9 +209,13 @@ async def start(message: Message, bot: Bot, db: Database, config: Config) -> Non
         await message.answer("Ваша заявка на beta-тест сейчас отклонена.")
         return
 
-    await message.answer("Заявка на beta-тест отправлена администратору. Я сообщу, когда доступ будет готов.")
+    await message.answer(
+        "<b>Заявка отправлена</b>\n\n"
+        "Администратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов."
+    )
     admin_text = (
-        "<b>Новая заявка на beta-тест</b>\n\n"
+        "<b>Новая заявка на beta-тест</b>\n"
+        "<code>--------------------------------</code>\n\n"
         f"Пользователь: {display_name(user)}\n"
         f"Telegram ID: <code>{telegram_id}</code>"
     )
@@ -125,6 +227,52 @@ async def admin_command(message: Message, db: Database, config: Config) -> None:
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
     await message.answer(await admin_summary_text(db), reply_markup=admin_keyboard())
+
+
+@router.message(StateFilter(None), F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.animation)
+async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
+    if not message.from_user:
+        return
+
+    user = await db.get_user(message.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await message.answer("Загрузка доступна только одобренным активным пользователям.")
+        return
+    if not user.get("nc_user_id") or not user.get("nc_password"):
+        await message.answer(
+            "Для этого аккаунта нет сохраненного WebDAV-пароля. Попросите администратора сбросить пароль в панели."
+        )
+        return
+
+    target = upload_target_from_message(message)
+    if not target:
+        await message.answer("Не удалось определить файл для загрузки.")
+        return
+    file_id, filename, file_size = target
+    status_message = await message.answer(
+        f"Загружаю <b>{html.escape(filename)}</b> ({format_bytes(file_size)}) в Nextcloud..."
+    )
+
+    temp_file = tempfile.NamedTemporaryFile(prefix="tg-nextcloud-", delete=False)
+    temp_path = Path(temp_file.name)
+    temp_file.close()
+    try:
+        await bot.download(file_id, destination=temp_path)
+        await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
+        updated_storage = await storage_text(user, nc)
+        await status_message.edit_text(
+            f"<b>Файл загружен</b>\n\n"
+            f"Папка: <code>{html.escape(config.upload_folder)}</code>\n"
+            f"Файл: <code>{html.escape(filename)}</code>\n\n"
+            f"{updated_storage}"
+        )
+    except NextcloudError as exc:
+        await status_message.edit_text(f"Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
+    except Exception as exc:
+        logging.exception("Failed to upload Telegram file to Nextcloud")
+        await status_message.edit_text(f"Не удалось обработать файл: <code>{html.escape(str(exc))}</code>")
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 @router.callback_query(F.data == "admin")
@@ -157,15 +305,16 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         await callback.message.answer(f"Не удалось выдать доступ: <code>{html.escape(str(exc))}</code>")
         return
 
-    await db.approve_user(telegram_id, nc_user_id, config.default_quota_gb)
+    await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
     await bot.send_message(
         telegram_id,
-        "Ваша заявка на beta-тест одобрена.\n\n"
+        "<b>Ваша заявка одобрена</b>\n"
+        "<code>--------------------------------</code>\n\n"
         f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
         f"Логин: <code>{nc_user_id}</code>\n"
         f"Пароль: <code>{html.escape(password)}</code>\n"
         f"Место на диске: <b>{config.default_quota_gb} GB</b>\n\n"
-        "Сохраните пароль: после отправки бот не показывает его повторно.",
+        "Файлы можно отправлять прямо сюда: бот загрузит их в вашу папку Nextcloud.",
     )
     await callback.message.edit_text(
         f"Доступ выдан пользователю <code>{telegram_id}</code>: {config.default_quota_gb} GB."
@@ -207,19 +356,20 @@ async def users_list(callback: CallbackQuery, db: Database, config: Config) -> N
 
 
 @router.callback_query(F.data.startswith("user:"))
-async def user_details(callback: CallbackQuery, db: Database, config: Config) -> None:
+async def user_details(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not is_admin(callback.from_user.id, config):
         await callback.answer("Нет доступа", show_alert=True)
         return
     _, telegram_id_raw, back_status, back_page_raw = callback.data.split(":")
     telegram_id = int(telegram_id_raw)
-    await render_user_details(callback, db, config, telegram_id, back_status, int(back_page_raw))
+    await render_user_details(callback, db, nc, config, telegram_id, back_status, int(back_page_raw))
     await callback.answer()
 
 
 async def render_user_details(
     callback: CallbackQuery,
     db: Database,
+    nc: NextcloudClient | None,
     config: Config,
     telegram_id: int,
     back_status: str = "all",
@@ -231,6 +381,7 @@ async def render_user_details(
         return
 
     disabled = bool(user["is_disabled"])
+    storage = await storage_text(user, nc) if nc and user["status"] == "approved" else "Занято: <b>нет данных</b>"
     text = (
         "<b>Пользователь</b>\n\n"
         f"Имя: {display_name(user)}\n"
@@ -238,6 +389,7 @@ async def render_user_details(
         f"Nextcloud ID: <code>{html.escape(user.get('nc_user_id') or '-')}</code>\n"
         f"Статус: <b>{html.escape(user['status'])}</b>\n"
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
+        f"{storage}\n"
         f"Доступ: <b>{'отключен' if disabled else 'активен'}</b>"
     )
     await callback.message.edit_text(
@@ -268,7 +420,7 @@ async def quota_add(callback: CallbackQuery, db: Database, nc: NextcloudClient, 
         return
     await db.set_quota(telegram_id, new_quota)
     await callback.answer(f"Добавлено {amount}GB")
-    await render_user_details(callback, db, config, telegram_id)
+    await render_user_details(callback, db, nc, config, telegram_id)
 
 
 @router.callback_query(F.data.startswith("quotacustom:"))
@@ -318,6 +470,16 @@ async def quota_custom_amount(message: Message, state: FSMContext, db: Database,
     await message.answer(f"Квота пользователя <code>{telegram_id}</code> теперь {new_quota} GB.")
 
 
+@router.callback_query(F.data.startswith("refreshusage:"))
+async def refresh_usage(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    telegram_id = int(callback.data.split(":", 1)[1])
+    await render_user_details(callback, db, nc, config, telegram_id)
+    await callback.answer("Данные обновлены")
+
+
 @router.callback_query(F.data.startswith("resetpass:"))
 async def reset_password(callback: CallbackQuery, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not is_admin(callback.from_user.id, config):
@@ -337,6 +499,7 @@ async def reset_password(callback: CallbackQuery, bot: Bot, db: Database, nc: Ne
         await callback.message.answer(f"Не удалось сбросить пароль: <code>{html.escape(str(exc))}</code>")
         return
 
+    await db.set_nextcloud_password(telegram_id, password)
     try:
         await bot.send_message(
             telegram_id,
@@ -383,7 +546,57 @@ async def set_enabled(callback: CallbackQuery, db: Database, nc: NextcloudClient
         return
     await db.set_disabled(telegram_id, not enabled)
     await callback.answer("Готово")
-    await render_user_details(callback, db, config, telegram_id)
+    await render_user_details(callback, db, nc, config, telegram_id)
+
+
+@router.callback_query(F.data.startswith("deleteask:"))
+async def delete_user_ask(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    telegram_id = int(callback.data.split(":", 1)[1])
+    user = await db.get_user(telegram_id)
+    if not user:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "<b>Удаление пользователя</b>\n\n"
+        f"Будет удален аккаунт Nextcloud и запись в базе бота.\n"
+        f"Пользователь: <code>{telegram_id}</code>",
+        reply_markup=delete_confirm_keyboard(telegram_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("deleteyes:"))
+async def delete_user_confirm(callback: CallbackQuery, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    telegram_id = int(callback.data.split(":", 1)[1])
+    user = await db.get_user(telegram_id)
+    if not user:
+        await callback.answer("Пользователь уже удален", show_alert=True)
+        return
+
+    if user.get("nc_user_id"):
+        try:
+            await nc.delete_user(user["nc_user_id"])
+        except NextcloudError as exc:
+            await callback.answer("Ошибка Nextcloud", show_alert=True)
+            await callback.message.answer(f"Не удалось удалить Nextcloud-аккаунт: <code>{html.escape(str(exc))}</code>")
+            return
+
+    await db.delete_user(telegram_id)
+    try:
+        await bot.send_message(telegram_id, "Ваш beta-доступ Nextcloud был удален администратором.")
+    except Exception:
+        logging.exception("Failed to notify deleted user %s", telegram_id)
+    await callback.message.edit_text(
+        f"Пользователь <code>{telegram_id}</code> удален.",
+        reply_markup=admin_keyboard(),
+    )
+    await callback.answer("Удалено")
 
 
 @router.callback_query(F.data == "backup")

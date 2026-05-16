@@ -17,6 +17,7 @@ class Config:
     default_quota_gb: int
     database_path: Path
     backup_dir: Path
+    upload_folder: str
 
 
 def _required(name: str) -> str:
@@ -53,4 +54,5 @@ def load_config() -> Config:
         default_quota_gb=default_quota_gb,
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
         backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
+        upload_folder=os.getenv("UPLOAD_FOLDER", "Telegram uploads").strip() or "Telegram uploads",
     )
