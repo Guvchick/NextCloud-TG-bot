@@ -54,8 +54,9 @@ class NextcloudClient:
             raise NextcloudError(f"Nextcloud HTTP {response.status}: {text[:300]}")
 
         meta = payload.get("ocs", {}).get("meta", {})
+        status = str(meta.get("status", "")).lower()
         status_code = int(meta.get("statuscode", 0))
-        if status_code != 100:
+        if status != "ok" and status_code not in {100, 200, 201, 202, 204}:
             message = meta.get("message") or "unknown Nextcloud OCS error"
             if (
                 status_code == 403
@@ -113,11 +114,19 @@ class NextcloudClient:
         )
 
     async def set_user_value(self, user_id: str, key: str, value: str) -> None:
-        await self._request(
-            "PUT",
-            f"/ocs/v1.php/cloud/users/{user_id}",
-            {"key": key, "value": value},
-        )
+        data = {"key": key, "value": value}
+        try:
+            await self._request("PUT", f"/ocs/v2.php/cloud/users/{user_id}", data)
+        except NextcloudError as exc:
+            if "HTTP 404" in str(exc) or "OCS 404" in str(exc):
+                await self._request("PUT", f"/ocs/v1.php/cloud/users/{user_id}", data)
+                return
+            if "OCS 998" in str(exc) and key == "password":
+                raise NextcloudError(
+                    "Nextcloud rejected password change. Check password policy, admin permissions, "
+                    "and whether NEXTCLOUD_ADMIN_PASSWORD is a real admin password or a valid app password."
+                ) from exc
+            raise
 
     async def ensure_user(self, user_id: str, password: str, quota_gb: int) -> None:
         if await self.user_exists(user_id):

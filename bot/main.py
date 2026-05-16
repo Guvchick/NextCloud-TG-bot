@@ -282,6 +282,12 @@ async def admin_command(message: Message, db: Database, config: Config) -> None:
 async def health_command(message: Message, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
+    internal_note = ""
+    if config.nextcloud_internal_url == config.nextcloud_url:
+        internal_note = (
+            "\n\nВнутренний URL совпадает с публичным. Если бот и Nextcloud на одном сервере, "
+            "обычно лучше задать <code>NEXTCLOUD_INTERNAL_URL</code>."
+        )
     try:
         await nc.check_connection()
         status = "Nextcloud API доступен"
@@ -291,7 +297,7 @@ async def health_command(message: Message, nc: NextcloudClient, config: Config) 
         "<b>Проверка Nextcloud</b>\n\n"
         f"Публичный URL: <code>{html.escape(config.nextcloud_url)}</code>\n"
         f"Внутренний URL: <code>{html.escape(config.nextcloud_internal_url)}</code>\n\n"
-        f"{status}"
+        f"{status}{internal_note}"
     )
 
 
