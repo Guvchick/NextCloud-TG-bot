@@ -18,6 +18,10 @@ class Config:
     database_path: Path
     backup_dir: Path
     upload_folder: str
+    sticker_welcome: str | None
+    sticker_approved: str | None
+    sticker_upload_ok: str | None
+    sticker_error: str | None
 
 
 def _required(name: str) -> str:
@@ -38,6 +42,11 @@ def _admin_ids(raw: str) -> set[int]:
     return ids
 
 
+def _optional(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
+
+
 def load_config() -> Config:
     load_dotenv()
 
@@ -55,4 +64,8 @@ def load_config() -> Config:
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
         backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
         upload_folder=os.getenv("UPLOAD_FOLDER", "Telegram uploads").strip() or "Telegram uploads",
+        sticker_welcome=_optional("STICKER_WELCOME"),
+        sticker_approved=_optional("STICKER_APPROVED"),
+        sticker_upload_ok=_optional("STICKER_UPLOAD_OK"),
+        sticker_error=_optional("STICKER_ERROR"),
     )

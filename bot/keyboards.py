@@ -4,6 +4,15 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+def account_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Мой диск", callback_data="account:status")
+    builder.button(text="Показать пароль", callback_data="account:password")
+    builder.button(text="Сменить пароль", callback_data="account:change_password")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def request_review_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Одобрить", callback_data=f"approve:{telegram_id}")

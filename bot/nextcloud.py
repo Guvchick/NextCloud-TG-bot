@@ -159,15 +159,27 @@ class NextcloudClient:
             "available": int(available.text) if available is not None and available.text else None,
         }
 
-    async def ensure_folder(self, user_id: str, password: str, folder: str) -> None:
+    async def ensure_folder(self, user_id: str, password: str, folder: str) -> bool:
+        if not folder.strip("/"):
+            return True
         status, text = await self._dav_request("MKCOL", user_id, password, folder)
+        if status in {201, 405}:
+            return True
+        if status == 403:
+            return False
+        if status == 409:
+            return False
         if status not in {201, 405}:
             raise NextcloudError(f"Nextcloud WebDAV folder HTTP {status}: {text[:300]}")
+        return True
 
-    async def upload_file(self, user_id: str, password: str, folder: str, filename: str, local_path: Path) -> None:
-        await self.ensure_folder(user_id, password, folder)
-        remote_path = f"{folder.strip('/')}/{filename}"
+    async def upload_file(self, user_id: str, password: str, folder: str, filename: str, local_path: Path) -> str:
+        target_folder = folder.strip("/")
+        if target_folder and not await self.ensure_folder(user_id, password, target_folder):
+            target_folder = ""
+        remote_path = f"{target_folder}/{filename}" if target_folder else filename
         with local_path.open("rb") as file:
             status, text = await self._dav_request("PUT", user_id, password, remote_path, data=file)
         if status not in {200, 201, 204}:
             raise NextcloudError(f"Nextcloud WebDAV upload HTTP {status}: {text[:300]}")
+        return remote_path

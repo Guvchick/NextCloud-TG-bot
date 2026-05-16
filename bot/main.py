@@ -22,6 +22,7 @@ from bot.backups import create_json_backup, create_sqlite_backup
 from bot.config import Config, load_config
 from bot.db import Database
 from bot.keyboards import (
+    account_keyboard,
     admin_keyboard,
     backup_keyboard,
     broadcast_confirm_keyboard,
@@ -45,6 +46,10 @@ class QuotaState(StatesGroup):
     waiting_amount = State()
 
 
+class UserPasswordState(StatesGroup):
+    waiting_password = State()
+
+
 def is_admin(user_id: int, config: Config) -> bool:
     return user_id in config.admin_ids
 
@@ -60,6 +65,19 @@ def display_name(user: dict) -> str:
 def generate_password(length: int = 18) -> str:
     alphabet = string.ascii_letters + string.digits + "_-"
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def valid_password(password: str) -> bool:
+    return len(password) >= 8 and len(password) <= 128 and not password.isspace()
+
+
+async def send_sticker(bot: Bot, chat_id: int, sticker_id: str | None) -> None:
+    if not sticker_id:
+        return
+    try:
+        await bot.send_sticker(chat_id, sticker_id)
+    except Exception:
+        logging.exception("Failed to send sticker to %s", chat_id)
 
 
 def format_bytes(value: int | None) -> str:
@@ -109,6 +127,27 @@ async def storage_text(user: dict, nc: NextcloudClient) -> str:
             f"<code>{usage_bar(used, available)}</code> {percent:.1f}%"
         )
     return f"Занято: <b>{format_bytes(used)}</b>, свободно: <b>{format_bytes(available)}</b>"
+
+
+async def account_text(user: dict, nc: NextcloudClient, config: Config, include_password: bool = False) -> str:
+    password_line = ""
+    if include_password:
+        password = user.get("nc_password")
+        if password:
+            password_line = f"Пароль: <code>{html.escape(password)}</code>\n"
+        else:
+            password_line = "Пароль: <b>не сохранен</b>\n"
+    return (
+        "<b>Ваш Nextcloud-диск</b>\n"
+        "<code>--------------------------------</code>\n\n"
+        f"Сервер: <b>{html.escape(config.nextcloud_url)}</b>\n"
+        f"Логин: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
+        f"{password_line}"
+        f"Квота: <b>{user['quota_gb']} GB</b>\n"
+        f"Папка загрузок: <code>{html.escape(config.upload_folder or 'корень диска')}</code>\n\n"
+        f"{await storage_text(user, nc)}\n\n"
+        "Отправьте файл в этот чат, и бот загрузит его в Nextcloud."
+    )
 
 
 def clean_filename(filename: str) -> str:
@@ -194,15 +233,8 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
     )
 
     if user["status"] == "approved":
-        await message.answer(
-            "<b>Ваш beta-доступ активен</b>\n"
-            "<code>--------------------------------</code>\n\n"
-            f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
-            f"Логин: <code>{telegram_id}</code>\n"
-            f"Квота: <b>{user['quota_gb']} GB</b>\n\n"
-            f"{await storage_text(user, nc)}\n\n"
-            "Чтобы загрузить файл на сервер, просто отправьте его сюда."
-        )
+        await send_sticker(bot, message.chat.id, config.sticker_welcome)
+        await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard())
         return
 
     if user["status"] == "rejected":
@@ -227,6 +259,79 @@ async def admin_command(message: Message, db: Database, config: Config) -> None:
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
     await message.answer(await admin_summary_text(db), reply_markup=admin_keyboard())
+
+
+@router.callback_query(F.data == "account:status")
+async def account_status(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer("Доступ не активен", show_alert=True)
+        return
+    await callback.message.edit_text(await account_text(user, nc, config), reply_markup=account_keyboard())
+    await callback.answer("Обновлено")
+
+
+@router.callback_query(F.data == "account:password")
+async def account_password(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer("Доступ не активен", show_alert=True)
+        return
+    await callback.message.edit_text(await account_text(user, nc, config, include_password=True), reply_markup=account_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "account:change_password")
+async def account_change_password(callback: CallbackQuery, state: FSMContext, db: Database, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer("Доступ не активен", show_alert=True)
+        return
+    await state.set_state(UserPasswordState.waiting_password)
+    await callback.message.answer(
+        "Отправьте новый пароль для Nextcloud.\n\n"
+        "Минимум 8 символов. После смены бот обновит сохраненный пароль для загрузок."
+    )
+    await callback.answer()
+
+
+@router.message(UserPasswordState.waiting_password)
+async def account_change_password_apply(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    db: Database,
+    nc: NextcloudClient,
+    config: Config,
+) -> None:
+    if not message.from_user:
+        return
+    user = await db.get_user(message.from_user.id)
+    if not user or user["status"] != "approved" or user["is_disabled"] or not user.get("nc_user_id"):
+        await state.clear()
+        await message.answer("Доступ не активен.")
+        return
+
+    password = (message.text or "").strip()
+    if not valid_password(password):
+        await message.answer("Пароль должен быть от 8 до 128 символов.")
+        return
+
+    try:
+        await nc.set_user_value(user["nc_user_id"], "password", password)
+    except NextcloudError as exc:
+        await message.answer(f"Не удалось сменить пароль: <code>{html.escape(str(exc))}</code>")
+        return
+
+    await db.set_nextcloud_password(user["telegram_id"], password)
+    await state.clear()
+    await send_sticker(bot, message.chat.id, config.sticker_approved)
+    await message.answer(
+        "Пароль сменен.\n\n"
+        f"Логин: <code>{html.escape(user['nc_user_id'])}</code>\n"
+        f"Новый пароль: <code>{html.escape(password)}</code>",
+        reply_markup=account_keyboard(),
+    )
 
 
 @router.message(StateFilter(None), F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.animation)
@@ -258,15 +363,16 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
     temp_file.close()
     try:
         await bot.download(file_id, destination=temp_path)
-        await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
+        remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
         updated_storage = await storage_text(user, nc)
+        await send_sticker(bot, message.chat.id, config.sticker_upload_ok)
         await status_message.edit_text(
             f"<b>Файл загружен</b>\n\n"
-            f"Папка: <code>{html.escape(config.upload_folder)}</code>\n"
-            f"Файл: <code>{html.escape(filename)}</code>\n\n"
+            f"Путь: <code>{html.escape(remote_path)}</code>\n\n"
             f"{updated_storage}"
         )
     except NextcloudError as exc:
+        await send_sticker(bot, message.chat.id, config.sticker_error)
         await status_message.edit_text(f"Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
     except Exception as exc:
         logging.exception("Failed to upload Telegram file to Nextcloud")
@@ -306,6 +412,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         return
 
     await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
+    await send_sticker(bot, telegram_id, config.sticker_approved)
     await bot.send_message(
         telegram_id,
         "<b>Ваша заявка одобрена</b>\n"
@@ -314,7 +421,9 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         f"Логин: <code>{nc_user_id}</code>\n"
         f"Пароль: <code>{html.escape(password)}</code>\n"
         f"Место на диске: <b>{config.default_quota_gb} GB</b>\n\n"
-        "Файлы можно отправлять прямо сюда: бот загрузит их в вашу папку Nextcloud.",
+        "Файлы можно отправлять прямо сюда: бот загрузит их в Nextcloud.\n"
+        "Пароль можно посмотреть или сменить через /start.",
+        reply_markup=account_keyboard(),
     )
     await callback.message.edit_text(
         f"Доступ выдан пользователю <code>{telegram_id}</code>: {config.default_quota_gb} GB."
