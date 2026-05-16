@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from aiogram.types import InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+
+def request_review_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Одобрить", callback_data=f"approve:{telegram_id}")
+    builder.button(text="Отклонить", callback_data=f"reject:{telegram_id}")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Пользователи", callback_data="users:all:0")
+    builder.button(text="Заявки", callback_data="users:requested:0")
+    builder.button(text="Бекапы", callback_data="backup")
+    builder.button(text="Рассылка", callback_data="broadcast")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def users_keyboard(users: list[dict], status: str, page: int, has_next: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for user in users:
+        name = user.get("username") or user.get("first_name") or str(user["telegram_id"])
+        label = f"{name} | {user['status']} | {user.get('quota_gb', 0)}GB"
+        builder.button(text=label[:60], callback_data=f"user:{user['telegram_id']}:{status}:{page}")
+
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(("Назад", f"users:{status}:{page - 1}"))
+    if has_next:
+        nav_buttons.append(("Вперед", f"users:{status}:{page + 1}"))
+    for text, callback_data in nav_buttons:
+        builder.button(text=text, callback_data=callback_data)
+
+    builder.button(text="В админку", callback_data="admin")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: str, is_disabled: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if status in {"requested", "rejected"}:
+        builder.button(text="Одобрить", callback_data=f"approve:{telegram_id}")
+    if status == "requested":
+        builder.button(text="Отклонить", callback_data=f"reject:{telegram_id}")
+    if status == "approved":
+        builder.button(text="+1GB", callback_data=f"quotaadd:{telegram_id}:1")
+        builder.button(text="+5GB", callback_data=f"quotaadd:{telegram_id}:5")
+        builder.button(text="+10GB", callback_data=f"quotaadd:{telegram_id}:10")
+        builder.button(text="Другое", callback_data=f"quotacustom:{telegram_id}")
+        builder.button(text="Сбросить пароль", callback_data=f"resetpass:{telegram_id}")
+        if is_disabled:
+            builder.button(text="Включить", callback_data=f"enable:{telegram_id}")
+        else:
+            builder.button(text="Отключить", callback_data=f"disable:{telegram_id}")
+    builder.button(text="Назад", callback_data=f"users:{back_status}:{back_page}")
+    builder.adjust(2, 3, 1, 1, 1)
+    return builder.as_markup()
+
+
+def backup_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="SQLite", callback_data="backup:db")
+    builder.button(text="JSON", callback_data="backup:json")
+    builder.button(text="В админку", callback_data="admin")
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отправить всем", callback_data="broadcast:confirm")
+    builder.button(text="Отмена", callback_data="broadcast:cancel")
+    builder.adjust(1)
+    return builder.as_markup()
