@@ -180,6 +180,11 @@ class Database:
             )
             await db.commit()
 
+    async def delete_setting(self, key: str) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM settings WHERE key = ?", (key,))
+            await db.commit()
+
     async def list_settings(self, prefix: str | None = None) -> dict[str, str]:
         async with aiosqlite.connect(self.path) as db:
             if prefix:

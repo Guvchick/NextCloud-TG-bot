@@ -53,6 +53,11 @@ SUPPORT_EMAIL=support@example.com
 BACKUP_RETENTION_DAYS=7
 AUTO_BACKUP_INTERVAL_HOURS=24
 NEXTCLOUD_SYNC_INTERVAL_MINUTES=60
+TELEGRAM_MAX_DOWNLOAD_MB=20
+STICKER_WELCOME=
+STICKER_APPROVED=
+STICKER_UPLOAD_OK=
+STICKER_ERROR=
 ```
 
 `ADMIN_IDS` - это Telegram ID администраторов через запятую.
@@ -75,10 +80,13 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 
 В `docker-compose.yml` уже есть `extra_hosts`, который направит `NEXTCLOUD_HOSTNAME` на `host-gateway`.
 
-`UPLOAD_FOLDER` - папка в Nextcloud пользователя, куда бот будет складывать файлы из Telegram.
-Если Nextcloud запретит создать эту папку, бот попробует загрузить файл в корень диска пользователя.
+Файлы из Telegram загружаются в корень диска пользователя. `UPLOAD_FOLDER` оставлен как legacy-настройка, но пользовательский сценарий ее не показывает.
 
 `SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю как ссылки для связи с саппортом.
+
+`TELEGRAM_MAX_DOWNLOAD_MB` - лимит скачивания через Bot API. Если Telegram не дает скачать большой файл, бот заранее объяснит это пользователю и предложит загрузить файл напрямую через Nextcloud.
+
+`STICKER_*` - необязательные кастомные `file_id` стикеров. Если они не заданы или Telegram их отклонит, бот оставит базовые визуальные маркеры в тексте. Настроить можно через `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok`, `/setsticker error`.
 
 ## Запуск локально
 
@@ -114,9 +122,9 @@ docker compose up -d --build
 
 ## Загрузка файлов
 
-После одобрения пользователь может отправить боту файл, фото, видео, аудио, voice или animation. Бот скачает файл из Telegram и загрузит его в папку `UPLOAD_FOLDER` в Nextcloud-аккаунте этого пользователя.
+После одобрения пользователь может отправить боту файл, фото, видео, аудио, voice или animation. Бот скачает файл из Telegram и загрузит его в корень Nextcloud-аккаунта этого пользователя.
 
-В карточке пользователя админ видит занятое место и может нажать `Обновить место`, чтобы повторно запросить quota через WebDAV.
+В карточке пользователя админ видит занятое место. Данные обновляются при открытии карточки.
 
 Если Nextcloud возвращает `Permission denied to create directory` при создании папки загрузок, бот автоматически повторяет загрузку в корень диска.
 

@@ -25,6 +25,11 @@ class Config:
     backup_retention_days: int
     auto_backup_interval_hours: int
     nextcloud_sync_interval_minutes: int
+    telegram_max_download_mb: int
+    sticker_welcome: str | None
+    sticker_approved: str | None
+    sticker_upload_ok: str | None
+    sticker_error: str | None
 
 
 def _required(name: str) -> str:
@@ -84,4 +89,9 @@ def load_config() -> Config:
         backup_retention_days=_int_env("BACKUP_RETENTION_DAYS", 7),
         auto_backup_interval_hours=_int_env("AUTO_BACKUP_INTERVAL_HOURS", 24),
         nextcloud_sync_interval_minutes=_int_env("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),
+        telegram_max_download_mb=_int_env("TELEGRAM_MAX_DOWNLOAD_MB", 20),
+        sticker_welcome=_optional("STICKER_WELCOME"),
+        sticker_approved=_optional("STICKER_APPROVED"),
+        sticker_upload_ok=_optional("STICKER_UPLOAD_OK"),
+        sticker_error=_optional("STICKER_ERROR"),
     )

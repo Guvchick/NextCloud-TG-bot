@@ -13,6 +13,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -58,6 +59,10 @@ class UserPasswordState(StatesGroup):
     waiting_password = State()
 
 
+class StickerState(StatesGroup):
+    waiting_sticker = State()
+
+
 def is_admin(user_id: int, config: Config) -> bool:
     return user_id in config.admin_ids
 
@@ -88,6 +93,60 @@ def event_mark(event: str) -> str:
         "sync": "🔄",
         "backup": "🗄️",
     }.get(event, "•")
+
+
+def config_sticker(config: Config, event: str) -> str | None:
+    return {
+        "welcome": config.sticker_welcome,
+        "approved": config.sticker_approved,
+        "upload_ok": config.sticker_upload_ok,
+        "error": config.sticker_error,
+    }.get(event)
+
+
+async def send_event_sticker(bot: Bot, db: Database, config: Config, chat_id: int, event: str) -> None:
+    setting_key = f"sticker_{event}"
+    custom_sticker_id = await db.get_setting(setting_key)
+    sticker_id = custom_sticker_id or config_sticker(config, event)
+    if not sticker_id:
+        return
+    try:
+        await bot.send_sticker(chat_id, sticker_id)
+    except TelegramBadRequest as exc:
+        logging.warning("Sticker %s is invalid or unavailable, falling back to text marker: %s", event, exc)
+        if custom_sticker_id:
+            await db.delete_setting(setting_key)
+    except Exception:
+        logging.exception("Failed to send sticker event=%s chat_id=%s", event, chat_id)
+
+
+async def safe_edit_text(message, text: str, **kwargs) -> None:
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return
+        raise
+
+
+def telegram_download_limit_bytes(config: Config) -> int:
+    return config.telegram_max_download_mb * 1024 * 1024
+
+
+def support_text(config: Config) -> str:
+    lines = ["<b>Поддержка</b>", ""]
+    if config.support_telegram:
+        telegram = config.support_telegram.strip()
+        if telegram.startswith("http://") or telegram.startswith("https://"):
+            lines.append(f'Telegram: <a href="{html.escape(telegram)}">{html.escape(telegram)}</a>')
+        else:
+            username = telegram.lstrip("@")
+            lines.append(f'Telegram: <a href="https://t.me/{html.escape(username)}">@{html.escape(username)}</a>')
+    if config.support_email:
+        lines.append(f'Email: <a href="mailto:{html.escape(config.support_email)}">{html.escape(config.support_email)}</a>')
+    if len(lines) == 2:
+        lines.append("Контакты поддержки пока не настроены.")
+    return "\n".join(lines)
 
 
 def format_bytes(value: int | None) -> str:
@@ -130,6 +189,12 @@ async def storage_text(user: dict, nc: NextcloudClient) -> str:
     used = quota["used"]
     available = quota["available"]
     total = used + available if used is not None and available is not None and available >= 0 else None
+    if used == 0 and available is not None and available >= 0:
+        return (
+            f"Занято: <b>0 B</b>\n"
+            f"Доступно: <b>{format_bytes(available)}</b>\n"
+            f"<code>{usage_bar(used, available)}</code> 0.0%"
+        )
     if total:
         percent = used / total * 100 if used is not None else 0
         return (
@@ -164,7 +229,7 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
         f"Логин: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
         f"{password_line}"
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
-        f"Папка загрузок: <code>{html.escape(config.upload_folder or 'корень диска')}</code>\n\n"
+        "\n"
         f"{await storage_text(user, nc)}\n\n"
         f"Отправьте файл в этот чат, и бот загрузит его в Nextcloud.{support_line}"
     )
@@ -278,6 +343,7 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
             await db.delete_user(telegram_id)
             await message.answer("Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.")
             return
+        await send_event_sticker(bot, db, config, message.chat.id, "welcome")
         await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard())
         logging.info("Approved user opened account panel: telegram_id=%s", telegram_id)
         return
@@ -343,6 +409,71 @@ async def sync_command(message: Message, db: Database, nc: NextcloudClient, conf
     await message.answer(f"{event_mark('sync')} Синхронизация завершена.\nПроверено: <b>{checked}</b>\nУдалено из БД бота: <b>{removed}</b>")
 
 
+async def stickers_text(db: Database, config: Config) -> str:
+    settings = await db.list_settings("sticker_")
+    return (
+        "<b>Стикеры</b>\n\n"
+        "Если кастомный стикер не задан или Telegram его отклонит, бот оставит базовый маркер в тексте.\n\n"
+        f"welcome: <b>{'кастомный' if settings.get('sticker_welcome') or config.sticker_welcome else 'базовый'}</b> {event_mark('welcome')}\n"
+        f"approved: <b>{'кастомный' if settings.get('sticker_approved') or config.sticker_approved else 'базовый'}</b> {event_mark('approved')}\n"
+        f"upload_ok: <b>{'кастомный' if settings.get('sticker_upload_ok') or config.sticker_upload_ok else 'базовый'}</b> {event_mark('upload_ok')}\n"
+        f"error: <b>{'кастомный' if settings.get('sticker_error') or config.sticker_error else 'базовый'}</b> {event_mark('error')}\n\n"
+        "Команды настройки:\n"
+        "<code>/setsticker welcome</code>\n"
+        "<code>/setsticker approved</code>\n"
+        "<code>/setsticker upload_ok</code>\n"
+        "<code>/setsticker error</code>\n\n"
+        "После команды отправьте нужный стикер."
+    )
+
+
+@router.message(Command("stickers"))
+async def stickers_command(message: Message, db: Database, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    await message.answer(await stickers_text(db, config))
+
+
+@router.callback_query(F.data == "stickers")
+async def stickers_panel(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await safe_edit_text(callback.message, await stickers_text(db, config), reply_markup=admin_keyboard())
+    await callback.answer()
+
+
+@router.message(Command("setsticker"))
+async def set_sticker_command(message: Message, state: FSMContext, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2 or parts[1].strip() not in {"welcome", "approved", "upload_ok", "error"}:
+        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error</code>")
+        return
+    event = parts[1].strip()
+    await state.set_state(StickerState.waiting_sticker)
+    await state.update_data(sticker_event=event)
+    await message.answer(f"Отправьте стикер для события <code>{event}</code>.")
+
+
+@router.message(StickerState.waiting_sticker, F.sticker)
+async def save_sticker(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config) or not message.sticker:
+        return
+    data = await state.get_data()
+    event = data["sticker_event"]
+    await db.set_setting(f"sticker_{event}", message.sticker.file_id)
+    await state.clear()
+    await message.answer(f"Кастомный стикер для <code>{event}</code> сохранен. Если Telegram его не примет, останется базовый маркер {event_mark(event)}.")
+
+
+@router.callback_query(F.data == "account:support")
+async def account_support(callback: CallbackQuery, config: Config) -> None:
+    await callback.message.answer(support_text(config))
+    await callback.answer()
+
+
 @router.callback_query(F.data == "sync")
 async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not callback.from_user or not is_admin(callback.from_user.id, config):
@@ -355,7 +486,8 @@ async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient,
         await callback.message.answer(f"{event_mark('error')} Синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
         await callback.answer("Ошибка", show_alert=True)
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"{event_mark('sync')} <b>Синхронизация завершена</b>\n\n"
         f"Проверено: <b>{checked}</b>\n"
         f"Удалено из БД бота: <b>{removed}</b>",
@@ -408,6 +540,7 @@ async def account_change_password_apply(
 
     await db.set_nextcloud_password(user["telegram_id"], password)
     await state.clear()
+    await send_event_sticker(bot, db, config, message.chat.id, "approved")
     await message.answer(
         f"{event_mark('approved')} Пароль сменен.\n\n"
         f"Логин: <code>{html.escape(user['nc_user_id'])}</code>\n"
@@ -436,6 +569,22 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         await message.answer("Не удалось определить файл для загрузки.")
         return
     file_id, filename, file_size = target
+    max_download = telegram_download_limit_bytes(config)
+    if file_size and file_size > max_download:
+        logging.info(
+            "Telegram file rejected before download: telegram_id=%s filename=%s size=%s limit=%s",
+            user["telegram_id"],
+            filename,
+            file_size,
+            max_download,
+        )
+        await send_event_sticker(bot, db, config, message.chat.id, "error")
+        await message.answer(
+            f"{event_mark('error')} Telegram не дает боту скачать этот файл: он больше "
+            f"<b>{config.telegram_max_download_mb} MB</b>.\n\n"
+            "Загрузите большой файл напрямую через веб-интерфейс Nextcloud."
+        )
+        return
     status_message = await message.answer(
         f"Загружаю <b>{html.escape(filename)}</b> ({format_bytes(file_size)}) в Nextcloud..."
     )
@@ -445,9 +594,10 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
     temp_file.close()
     try:
         await bot.download(file_id, destination=temp_path)
-        remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
+        remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], "", filename, temp_path)
         updated_storage = await storage_text(user, nc)
         logging.info("Upload completed: telegram_id=%s remote_path=%s size=%s", user["telegram_id"], remote_path, file_size)
+        await send_event_sticker(bot, db, config, message.chat.id, "upload_ok")
         await status_message.edit_text(
             f"{event_mark('upload_ok')} <b>Файл загружен</b>\n\n"
             f"Путь: <code>{html.escape(remote_path)}</code>\n\n"
@@ -455,7 +605,15 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         )
     except NextcloudError as exc:
         logging.warning("Upload failed for telegram_id=%s filename=%s: %s", user["telegram_id"], filename, exc)
+        await send_event_sticker(bot, db, config, message.chat.id, "error")
         await status_message.edit_text(f"{event_mark('error')} Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
+    except TelegramBadRequest as exc:
+        logging.warning("Telegram refused file download: telegram_id=%s filename=%s size=%s: %s", user["telegram_id"], filename, file_size, exc)
+        await status_message.edit_text(
+            f"{event_mark('error')} Telegram не дает боту скачать этот файл.\n\n"
+            f"Лимит для загрузки через бота: <b>{config.telegram_max_download_mb} MB</b>.\n"
+            "Загрузите большой файл напрямую через Nextcloud."
+        )
     except Exception as exc:
         logging.exception("Failed to upload Telegram file to Nextcloud")
         await status_message.edit_text(f"Не удалось обработать файл: <code>{html.escape(str(exc))}</code>")
@@ -468,7 +626,7 @@ async def admin_panel(callback: CallbackQuery, db: Database, config: Config) -> 
     if not callback.from_user or not is_admin(callback.from_user.id, config):
         await callback.answer("Нет доступа", show_alert=True)
         return
-    await callback.message.edit_text(await admin_summary_text(db), reply_markup=admin_keyboard())
+    await safe_edit_text(callback.message, await admin_summary_text(db), reply_markup=admin_keyboard())
     await callback.answer()
 
 
@@ -495,6 +653,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
 
     await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
     logging.info("User approved: telegram_id=%s nc_user_id=%s quota_gb=%s", telegram_id, nc_user_id, config.default_quota_gb)
+    await send_event_sticker(bot, db, config, telegram_id, "approved")
     await bot.send_message(
         telegram_id,
         f"{event_mark('approved')} <b>Ваша заявка одобрена</b>\n"
@@ -507,7 +666,8 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         "Пароль всегда виден в /start, там же его можно сменить.",
         reply_markup=account_keyboard(),
     )
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"Доступ выдан пользователю <code>{telegram_id}</code>: {config.default_quota_gb} GB."
     )
     await callback.answer("Одобрено")
@@ -525,7 +685,7 @@ async def reject_user(callback: CallbackQuery, bot: Bot, db: Database, config: C
         await bot.send_message(telegram_id, "Ваша заявка на beta-тест отклонена.")
     except Exception:
         logging.exception("Failed to notify rejected user %s", telegram_id)
-    await callback.message.edit_text(f"Заявка пользователя <code>{telegram_id}</code> отклонена.")
+    await safe_edit_text(callback.message, f"Заявка пользователя <code>{telegram_id}</code> отклонена.")
     await callback.answer("Отклонено")
 
 
@@ -543,7 +703,7 @@ async def users_list(callback: CallbackQuery, db: Database, config: Config) -> N
     title = "Все пользователи" if status == "all" else f"Пользователи: {status}"
     text = f"<b>{title}</b>\n\n"
     text += "Выберите пользователя." if users else "Пока пусто."
-    await callback.message.edit_text(text, reply_markup=users_keyboard(users, status, page, has_next))
+    await safe_edit_text(callback.message, text, reply_markup=users_keyboard(users, status, page, has_next))
     await callback.answer()
 
 
@@ -584,7 +744,8 @@ async def render_user_details(
         f"{storage}\n"
         f"Доступ: <b>{'отключен' if disabled else 'активен'}</b>"
     )
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         text,
         reply_markup=user_keyboard(telegram_id, back_status, back_page, user["status"], disabled),
     )
@@ -751,7 +912,8 @@ async def delete_user_ask(callback: CallbackQuery, db: Database, config: Config)
     if not user:
         await callback.answer("Пользователь не найден", show_alert=True)
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "<b>Удаление пользователя</b>\n\n"
         f"Будет удален аккаунт Nextcloud и запись в базе бота.\n"
         f"Пользователь: <code>{telegram_id}</code>",
@@ -785,7 +947,8 @@ async def delete_user_confirm(callback: CallbackQuery, bot: Bot, db: Database, n
         await bot.send_message(telegram_id, "Ваш beta-доступ Nextcloud был удален администратором.")
     except Exception:
         logging.exception("Failed to notify deleted user %s", telegram_id)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"Пользователь <code>{telegram_id}</code> удален.",
         reply_markup=admin_keyboard(),
     )
@@ -797,7 +960,8 @@ async def backup_panel(callback: CallbackQuery, config: Config) -> None:
     if not is_admin(callback.from_user.id, config):
         await callback.answer("Нет доступа", show_alert=True)
         return
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"{event_mark('backup')} <b>Бекапы</b>\n\n"
         "Все бекапы сжимаются в .gz, хранятся на сервере и автоматически чистятся по retention.",
         reply_markup=backup_keyboard(),
@@ -836,13 +1000,13 @@ async def backup_list(callback: CallbackQuery, config: Config) -> None:
         return
     backups = list_backup_files(config.backup_dir, limit=10)
     if not backups:
-        await callback.message.edit_text("Сжатых SQLite-бекапов пока нет.", reply_markup=backup_keyboard())
+        await safe_edit_text(callback.message, "Сжатых SQLite-бекапов пока нет.", reply_markup=backup_keyboard())
         await callback.answer()
         return
     text = f"{event_mark('backup')} <b>Последние SQLite-бекапы</b>\n\n"
     for index, path in enumerate(backups, start=1):
         text += f"{index}. <code>{html.escape(path.name)}</code> ({format_bytes(path.stat().st_size)})\n"
-    await callback.message.edit_text(text, reply_markup=backup_keyboard())
+    await safe_edit_text(callback.message, text, reply_markup=backup_keyboard())
     await callback.answer()
 
 
@@ -853,11 +1017,12 @@ async def backup_restore_panel(callback: CallbackQuery, config: Config) -> None:
         return
     backups = list_backup_files(config.backup_dir, limit=10)
     if not backups:
-        await callback.message.edit_text("Нет SQLite-бекапов для восстановления.", reply_markup=backup_keyboard())
+        await safe_edit_text(callback.message, "Нет SQLite-бекапов для восстановления.", reply_markup=backup_keyboard())
         await callback.answer()
         return
     items = [(str(index), path.name) for index, path in enumerate(backups)]
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"{event_mark('backup')} <b>Восстановление бекапа</b>\n\n"
         "Выберите SQLite-бекап. Перед восстановлением будет создан свежий safety-бекап.",
         reply_markup=restore_backup_keyboard(items),
@@ -878,7 +1043,8 @@ async def backup_restore(callback: CallbackQuery, db: Database, config: Config) 
     safety = create_sqlite_backup(db.path, config.backup_dir)
     restore_sqlite_backup(backups[index], db.path)
     logging.warning("Database restored from %s; safety backup: %s", backups[index], safety)
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"{event_mark('backup')} База восстановлена из <code>{html.escape(backups[index].name)}</code>.\n\n"
         f"Safety-бекап перед восстановлением: <code>{html.escape(safety.name)}</code>\n"
         "Рекомендуется перезапустить бота.",
@@ -916,7 +1082,7 @@ async def broadcast_cancel(callback: CallbackQuery, state: FSMContext, config: C
         await callback.answer("Нет доступа", show_alert=True)
         return
     await state.clear()
-    await callback.message.edit_text("Рассылка отменена.", reply_markup=admin_keyboard())
+    await safe_edit_text(callback.message, "Рассылка отменена.", reply_markup=admin_keyboard())
     await callback.answer()
 
 
@@ -944,7 +1110,8 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot, d
             logging.exception("Failed to broadcast to %s", telegram_id)
 
     await state.clear()
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         f"Рассылка завершена.\n\nОтправлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>",
         reply_markup=admin_keyboard(),
     )

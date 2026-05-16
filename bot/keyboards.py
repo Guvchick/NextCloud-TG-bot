@@ -7,6 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def account_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Сменить пароль", callback_data="account:change_password")
+    builder.button(text="Поддержка", callback_data="account:support")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -26,7 +27,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Бекапы", callback_data="backup")
     builder.button(text="Рассылка", callback_data="broadcast")
     builder.button(text="Синхронизация", callback_data="sync")
-    builder.adjust(2, 2, 1)
+    builder.button(text="Стикеры", callback_data="stickers")
+    builder.adjust(2, 2, 2)
     return builder.as_markup()
 
 
@@ -57,7 +59,6 @@ def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: st
     if status == "requested":
         builder.button(text="Отклонить", callback_data=f"reject:{telegram_id}")
     if status == "approved":
-        builder.button(text="Обновить место", callback_data=f"refreshusage:{telegram_id}")
         builder.button(text="+1GB", callback_data=f"quotaadd:{telegram_id}:1")
         builder.button(text="+5GB", callback_data=f"quotaadd:{telegram_id}:5")
         builder.button(text="+10GB", callback_data=f"quotaadd:{telegram_id}:10")
@@ -69,7 +70,7 @@ def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: st
             builder.button(text="Отключить", callback_data=f"disable:{telegram_id}")
         builder.button(text="Удалить", callback_data=f"deleteask:{telegram_id}")
     builder.button(text="Назад", callback_data=f"users:{back_status}:{back_page}")
-    builder.adjust(2, 1, 3, 1, 1, 1, 1)
+    builder.adjust(2, 3, 1, 1, 1, 1)
     return builder.as_markup()
 
 
