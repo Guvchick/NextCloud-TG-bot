@@ -57,6 +57,12 @@ class NextcloudClient:
         status_code = int(meta.get("statuscode", 0))
         if status_code != 100:
             message = meta.get("message") or "unknown Nextcloud OCS error"
+            if (
+                status_code == 403
+                and "Password confirmation is required" in message
+                and "/ocs/v1.php/" in path
+            ):
+                return await self._request(method, path.replace("/ocs/v1.php/", "/ocs/v2.php/"), data)
             raise NextcloudError(f"Nextcloud OCS {status_code}: {message}")
         return payload.get("ocs", {}).get("data") or {}
 
@@ -131,7 +137,13 @@ class NextcloudClient:
         await self._request("PUT", f"/ocs/v1.php/cloud/users/{user_id}/enable")
 
     async def delete_user(self, user_id: str) -> None:
-        await self._request("DELETE", f"/ocs/v1.php/cloud/users/{user_id}")
+        try:
+            await self._request("DELETE", f"/ocs/v2.php/cloud/users/{user_id}")
+        except NextcloudError as exc:
+            if "HTTP 404" in str(exc) or "OCS 404" in str(exc):
+                await self._request("DELETE", f"/ocs/v1.php/cloud/users/{user_id}")
+                return
+            raise
 
     async def get_quota(self, user_id: str, password: str) -> dict[str, int | None]:
         body = """<?xml version="1.0"?>

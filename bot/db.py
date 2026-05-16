@@ -37,6 +37,15 @@ class Database:
                 )
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             await self._ensure_column(db, "users", "nc_password", "TEXT")
             await db.commit()
 
@@ -148,6 +157,34 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             await db.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
             await db.commit()
+
+    async def get_setting(self, key: str) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = await cursor.fetchone()
+            return str(row[0]) if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        now = utc_now()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+            await db.commit()
+
+    async def list_settings(self, prefix: str | None = None) -> dict[str, str]:
+        async with aiosqlite.connect(self.path) as db:
+            if prefix:
+                cursor = await db.execute("SELECT key, value FROM settings WHERE key LIKE ?", (f"{prefix}%",))
+            else:
+                cursor = await db.execute("SELECT key, value FROM settings")
+            rows = await cursor.fetchall()
+            return {str(row[0]): str(row[1]) for row in rows}
 
     async def list_users(self, status: str | None = None, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:

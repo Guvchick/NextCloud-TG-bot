@@ -50,6 +50,10 @@ class UserPasswordState(StatesGroup):
     waiting_password = State()
 
 
+class StickerState(StatesGroup):
+    waiting_sticker = State()
+
+
 def is_admin(user_id: int, config: Config) -> bool:
     return user_id in config.admin_ids
 
@@ -78,6 +82,20 @@ async def send_sticker(bot: Bot, chat_id: int, sticker_id: str | None) -> None:
         await bot.send_sticker(chat_id, sticker_id)
     except Exception:
         logging.exception("Failed to send sticker to %s", chat_id)
+
+
+def config_sticker(config: Config, event: str) -> str | None:
+    return {
+        "welcome": config.sticker_welcome,
+        "approved": config.sticker_approved,
+        "upload_ok": config.sticker_upload_ok,
+        "error": config.sticker_error,
+    }.get(event)
+
+
+async def send_event_sticker(bot: Bot, db: Database, config: Config, chat_id: int, event: str) -> None:
+    sticker_id = await db.get_setting(f"sticker_{event}") or config_sticker(config, event)
+    await send_sticker(bot, chat_id, sticker_id)
 
 
 def format_bytes(value: int | None) -> str:
@@ -129,14 +147,13 @@ async def storage_text(user: dict, nc: NextcloudClient) -> str:
     return f"Занято: <b>{format_bytes(used)}</b>, свободно: <b>{format_bytes(available)}</b>"
 
 
-async def account_text(user: dict, nc: NextcloudClient, config: Config, include_password: bool = False) -> str:
-    password_line = ""
-    if include_password:
-        password = user.get("nc_password")
-        if password:
-            password_line = f"Пароль: <code>{html.escape(password)}</code>\n"
-        else:
-            password_line = "Пароль: <b>не сохранен</b>\n"
+async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
+    password = user.get("nc_password")
+    password_line = (
+        f"Пароль: <code>{html.escape(password)}</code>\n"
+        if password
+        else "Пароль: <b>не сохранен</b>\n"
+    )
     return (
         "<b>Ваш Nextcloud-диск</b>\n"
         "<code>--------------------------------</code>\n\n"
@@ -233,7 +250,7 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
     )
 
     if user["status"] == "approved":
-        await send_sticker(bot, message.chat.id, config.sticker_welcome)
+        await send_event_sticker(bot, db, config, message.chat.id, "welcome")
         await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard())
         return
 
@@ -261,6 +278,75 @@ async def admin_command(message: Message, db: Database, config: Config) -> None:
     await message.answer(await admin_summary_text(db), reply_markup=admin_keyboard())
 
 
+@router.message(Command("stickers"))
+async def stickers_command(message: Message, db: Database, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    await message.answer(await stickers_text(db, config))
+
+
+async def stickers_text(db: Database, config: Config) -> str:
+    settings = await db.list_settings("sticker_")
+    return (
+        "<b>Стикеры бота</b>\n\n"
+        f"welcome: <b>{'есть' if settings.get('sticker_welcome') or config.sticker_welcome else 'нет'}</b>\n"
+        f"approved: <b>{'есть' if settings.get('sticker_approved') or config.sticker_approved else 'нет'}</b>\n"
+        f"upload_ok: <b>{'есть' if settings.get('sticker_upload_ok') or config.sticker_upload_ok else 'нет'}</b>\n"
+        f"error: <b>{'есть' if settings.get('sticker_error') or config.sticker_error else 'нет'}</b>\n\n"
+        "Чтобы задать стикер, отправьте команду:\n"
+        "<code>/setsticker welcome</code>\n"
+        "<code>/setsticker approved</code>\n"
+        "<code>/setsticker upload_ok</code>\n"
+        "<code>/setsticker error</code>\n\n"
+        "После команды отправьте нужный стикер."
+    )
+
+
+@router.callback_query(F.data == "stickers")
+async def stickers_panel(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text(await stickers_text(db, config), reply_markup=admin_keyboard())
+    await callback.answer()
+
+
+@router.message(Command("setsticker"))
+async def set_sticker_command(message: Message, state: FSMContext, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) != 2 or parts[1].strip() not in {"welcome", "approved", "upload_ok", "error"}:
+        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error</code>")
+        return
+    event = parts[1].strip()
+    await state.set_state(StickerState.waiting_sticker)
+    await state.update_data(sticker_event=event)
+    await message.answer(f"Теперь отправьте стикер для события <code>{event}</code>.")
+
+
+@router.message(StickerState.waiting_sticker, F.sticker)
+async def save_sticker(message: Message, state: FSMContext, db: Database, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config) or not message.sticker:
+        return
+    data = await state.get_data()
+    event = data["sticker_event"]
+    await db.set_setting(f"sticker_{event}", message.sticker.file_id)
+    await state.clear()
+    await message.answer(f"Стикер для <code>{event}</code> сохранен.")
+
+
+@router.message(StateFilter(None), F.sticker)
+async def sticker_file_id(message: Message, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config) or not message.sticker:
+        return
+    await message.answer(
+        "Это file_id стикера:\n"
+        f"<code>{html.escape(message.sticker.file_id)}</code>\n\n"
+        "Можно сохранить его командой <code>/setsticker welcome</code> и затем отправить этот стикер еще раз."
+    )
+
+
 @router.callback_query(F.data == "account:status")
 async def account_status(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
     user = await db.get_user(callback.from_user.id)
@@ -269,16 +355,6 @@ async def account_status(callback: CallbackQuery, db: Database, nc: NextcloudCli
         return
     await callback.message.edit_text(await account_text(user, nc, config), reply_markup=account_keyboard())
     await callback.answer("Обновлено")
-
-
-@router.callback_query(F.data == "account:password")
-async def account_password(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
-    user = await db.get_user(callback.from_user.id)
-    if not user or user["status"] != "approved" or user["is_disabled"]:
-        await callback.answer("Доступ не активен", show_alert=True)
-        return
-    await callback.message.edit_text(await account_text(user, nc, config, include_password=True), reply_markup=account_keyboard())
-    await callback.answer()
 
 
 @router.callback_query(F.data == "account:change_password")
@@ -325,7 +401,7 @@ async def account_change_password_apply(
 
     await db.set_nextcloud_password(user["telegram_id"], password)
     await state.clear()
-    await send_sticker(bot, message.chat.id, config.sticker_approved)
+    await send_event_sticker(bot, db, config, message.chat.id, "approved")
     await message.answer(
         "Пароль сменен.\n\n"
         f"Логин: <code>{html.escape(user['nc_user_id'])}</code>\n"
@@ -365,14 +441,14 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         await bot.download(file_id, destination=temp_path)
         remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
         updated_storage = await storage_text(user, nc)
-        await send_sticker(bot, message.chat.id, config.sticker_upload_ok)
+        await send_event_sticker(bot, db, config, message.chat.id, "upload_ok")
         await status_message.edit_text(
             f"<b>Файл загружен</b>\n\n"
             f"Путь: <code>{html.escape(remote_path)}</code>\n\n"
             f"{updated_storage}"
         )
     except NextcloudError as exc:
-        await send_sticker(bot, message.chat.id, config.sticker_error)
+        await send_event_sticker(bot, db, config, message.chat.id, "error")
         await status_message.edit_text(f"Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
     except Exception as exc:
         logging.exception("Failed to upload Telegram file to Nextcloud")
@@ -412,7 +488,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         return
 
     await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
-    await send_sticker(bot, telegram_id, config.sticker_approved)
+    await send_event_sticker(bot, db, config, telegram_id, "approved")
     await bot.send_message(
         telegram_id,
         "<b>Ваша заявка одобрена</b>\n"
@@ -422,7 +498,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         f"Пароль: <code>{html.escape(password)}</code>\n"
         f"Место на диске: <b>{config.default_quota_gb} GB</b>\n\n"
         "Файлы можно отправлять прямо сюда: бот загрузит их в Nextcloud.\n"
-        "Пароль можно посмотреть или сменить через /start.",
+        "Пароль всегда виден в /start, там же его можно сменить.",
         reply_markup=account_keyboard(),
     )
     await callback.message.edit_text(

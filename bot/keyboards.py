@@ -7,7 +7,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def account_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Мой диск", callback_data="account:status")
-    builder.button(text="Показать пароль", callback_data="account:password")
     builder.button(text="Сменить пароль", callback_data="account:change_password")
     builder.adjust(1)
     return builder.as_markup()
@@ -27,7 +26,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Заявки", callback_data="users:requested:0")
     builder.button(text="Бекапы", callback_data="backup")
     builder.button(text="Рассылка", callback_data="broadcast")
-    builder.adjust(2)
+    builder.button(text="Стикеры", callback_data="stickers")
+    builder.adjust(2, 2, 1)
     return builder.as_markup()
 
 
