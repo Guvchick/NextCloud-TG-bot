@@ -18,11 +18,13 @@ class Config:
     default_quota_gb: int
     database_path: Path
     backup_dir: Path
+    log_dir: Path
     upload_folder: str
-    sticker_welcome: str | None
-    sticker_approved: str | None
-    sticker_upload_ok: str | None
-    sticker_error: str | None
+    support_telegram: str | None
+    support_email: str | None
+    backup_retention_days: int
+    auto_backup_interval_hours: int
+    nextcloud_sync_interval_minutes: int
 
 
 def _required(name: str) -> str:
@@ -48,6 +50,13 @@ def _optional(name: str) -> str | None:
     return value or None
 
 
+def _int_env(name: str, default: int, minimum: int = 1) -> int:
+    value = int(os.getenv(name, str(default)))
+    if value < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}")
+    return value
+
+
 def load_config() -> Config:
     load_dotenv()
 
@@ -56,7 +65,7 @@ def load_config() -> Config:
         raise RuntimeError("DEFAULT_QUOTA_GB must be greater than zero")
 
     nextcloud_url = _required("NEXTCLOUD_URL").rstrip("/")
-    nextcloud_internal_url = os.getenv("NEXTCLOUD_INTERNAL_URL", nextcloud_url).strip().rstrip("/")
+    nextcloud_internal_url = os.getenv("NEXTCLOUD_INTERNAL_URL", "").strip().rstrip("/") or nextcloud_url
 
     return Config(
         bot_token=_required("BOT_TOKEN"),
@@ -68,9 +77,11 @@ def load_config() -> Config:
         default_quota_gb=default_quota_gb,
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
         backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
+        log_dir=Path(os.getenv("LOG_DIR", "logs")),
         upload_folder=os.getenv("UPLOAD_FOLDER", "Telegram uploads").strip() or "Telegram uploads",
-        sticker_welcome=_optional("STICKER_WELCOME"),
-        sticker_approved=_optional("STICKER_APPROVED"),
-        sticker_upload_ok=_optional("STICKER_UPLOAD_OK"),
-        sticker_error=_optional("STICKER_ERROR"),
+        support_telegram=_optional("SUPPORT_TELEGRAM"),
+        support_email=_optional("SUPPORT_EMAIL"),
+        backup_retention_days=_int_env("BACKUP_RETENTION_DAYS", 7),
+        auto_backup_interval_hours=_int_env("AUTO_BACKUP_INTERVAL_HOURS", 24),
+        nextcloud_sync_interval_minutes=_int_env("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),
     )

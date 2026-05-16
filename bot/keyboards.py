@@ -6,7 +6,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def account_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="Мой диск", callback_data="account:status")
     builder.button(text="Сменить пароль", callback_data="account:change_password")
     builder.adjust(1)
     return builder.as_markup()
@@ -26,7 +25,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="Заявки", callback_data="users:requested:0")
     builder.button(text="Бекапы", callback_data="backup")
     builder.button(text="Рассылка", callback_data="broadcast")
-    builder.button(text="Стикеры", callback_data="stickers")
+    builder.button(text="Синхронизация", callback_data="sync")
     builder.adjust(2, 2, 1)
     return builder.as_markup()
 
@@ -84,10 +83,21 @@ def delete_confirm_keyboard(telegram_id: int) -> InlineKeyboardMarkup:
 
 def backup_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="SQLite", callback_data="backup:db")
-    builder.button(text="JSON", callback_data="backup:json")
+    builder.button(text="Создать SQLite", callback_data="backup:db")
+    builder.button(text="Создать JSON", callback_data="backup:json")
+    builder.button(text="Список", callback_data="backup:list")
+    builder.button(text="Восстановить", callback_data="backup:restore")
     builder.button(text="В админку", callback_data="admin")
-    builder.adjust(2, 1)
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def restore_backup_keyboard(backups: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for backup_id, label in backups:
+        builder.button(text=label[:60], callback_data=f"restore:{backup_id}")
+    builder.button(text="Отмена", callback_data="backup")
+    builder.adjust(1)
     return builder.as_markup()
 
 

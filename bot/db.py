@@ -158,6 +158,9 @@ class Database:
             await db.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
             await db.commit()
 
+    async def approved_users(self) -> list[dict[str, Any]]:
+        return await self.list_users(status="approved", limit=100000, offset=0)
+
     async def get_setting(self, key: str) -> str | None:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))

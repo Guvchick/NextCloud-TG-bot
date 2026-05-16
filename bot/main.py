@@ -7,6 +7,7 @@ import re
 import secrets
 import string
 import tempfile
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -18,7 +19,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
-from bot.backups import create_json_backup, create_sqlite_backup
+from bot.backups import (
+    create_json_backup,
+    create_sqlite_backup,
+    list_backup_files,
+    prune_old_backups,
+    restore_sqlite_backup,
+)
 from bot.config import Config, load_config
 from bot.db import Database
 from bot.keyboards import (
@@ -28,6 +35,7 @@ from bot.keyboards import (
     broadcast_confirm_keyboard,
     delete_confirm_keyboard,
     request_review_keyboard,
+    restore_backup_keyboard,
     user_keyboard,
     users_keyboard,
 )
@@ -48,10 +56,6 @@ class QuotaState(StatesGroup):
 
 class UserPasswordState(StatesGroup):
     waiting_password = State()
-
-
-class StickerState(StatesGroup):
-    waiting_sticker = State()
 
 
 def is_admin(user_id: int, config: Config) -> bool:
@@ -75,27 +79,15 @@ def valid_password(password: str) -> bool:
     return len(password) >= 8 and len(password) <= 128 and not password.isspace()
 
 
-async def send_sticker(bot: Bot, chat_id: int, sticker_id: str | None) -> None:
-    if not sticker_id:
-        return
-    try:
-        await bot.send_sticker(chat_id, sticker_id)
-    except Exception:
-        logging.exception("Failed to send sticker to %s", chat_id)
-
-
-def config_sticker(config: Config, event: str) -> str | None:
+def event_mark(event: str) -> str:
     return {
-        "welcome": config.sticker_welcome,
-        "approved": config.sticker_approved,
-        "upload_ok": config.sticker_upload_ok,
-        "error": config.sticker_error,
-    }.get(event)
-
-
-async def send_event_sticker(bot: Bot, db: Database, config: Config, chat_id: int, event: str) -> None:
-    sticker_id = await db.get_setting(f"sticker_{event}") or config_sticker(config, event)
-    await send_sticker(bot, chat_id, sticker_id)
+        "welcome": "☁️",
+        "approved": "✅",
+        "upload_ok": "📦",
+        "error": "⚠️",
+        "sync": "🔄",
+        "backup": "🗄️",
+    }.get(event, "•")
 
 
 def format_bytes(value: int | None) -> str:
@@ -131,7 +123,7 @@ async def storage_text(user: dict, nc: NextcloudClient) -> str:
         return "Занято: <b>нет данных</b>"
     try:
         quota = await nc.get_quota(user["nc_user_id"], user["nc_password"])
-    except NextcloudError as exc:
+    except Exception as exc:
         logging.warning("Failed to fetch quota for %s: %s", user["telegram_id"], exc)
         return "Занято: <b>не удалось обновить</b>"
 
@@ -154,8 +146,19 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
         if password
         else "Пароль: <b>не сохранен</b>\n"
     )
+    support_parts = []
+    if config.support_telegram:
+        telegram = config.support_telegram.strip()
+        if telegram.startswith("http://") or telegram.startswith("https://"):
+            support_parts.append(f'<a href="{html.escape(telegram)}">Telegram</a>')
+        else:
+            username = telegram.lstrip("@")
+            support_parts.append(f'<a href="https://t.me/{html.escape(username)}">@{html.escape(username)}</a>')
+    if config.support_email:
+        support_parts.append(f'<a href="mailto:{html.escape(config.support_email)}">{html.escape(config.support_email)}</a>')
+    support_line = "\nСаппорт: " + " | ".join(support_parts) if support_parts else ""
     return (
-        "<b>Ваш Nextcloud-диск</b>\n"
+        f"{event_mark('welcome')} <b>Ваш Nextcloud-диск</b>\n"
         "<code>--------------------------------</code>\n\n"
         f"Сервер: <b>{html.escape(config.nextcloud_url)}</b>\n"
         f"Логин: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
@@ -163,7 +166,7 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
         f"Папка загрузок: <code>{html.escape(config.upload_folder or 'корень диска')}</code>\n\n"
         f"{await storage_text(user, nc)}\n\n"
-        "Отправьте файл в этот чат, и бот загрузит его в Nextcloud."
+        f"Отправьте файл в этот чат, и бот загрузит его в Nextcloud.{support_line}"
     )
 
 
@@ -232,6 +235,26 @@ async def notify_admins(bot: Bot, config: Config, text: str, reply_markup=None) 
             logging.exception("Failed to notify admin %s", admin_id)
 
 
+async def sync_nextcloud_users(db: Database, nc: NextcloudClient) -> tuple[int, int]:
+    checked = 0
+    removed = 0
+    for user in await db.approved_users():
+        nc_user_id = user.get("nc_user_id")
+        if not nc_user_id:
+            continue
+        checked += 1
+        if not await nc.user_exists(nc_user_id):
+            logging.warning(
+                "Sync removed Telegram user %s because Nextcloud user %s is missing",
+                user["telegram_id"],
+                nc_user_id,
+            )
+            await db.delete_user(int(user["telegram_id"]))
+            removed += 1
+    logging.info("Nextcloud sync completed: checked=%s removed=%s", checked, removed)
+    return checked, removed
+
+
 @router.message(CommandStart())
 async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user:
@@ -250,8 +273,13 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
     )
 
     if user["status"] == "approved":
-        await send_event_sticker(bot, db, config, message.chat.id, "welcome")
+        if user.get("nc_user_id") and not await nc.user_exists(user["nc_user_id"]):
+            logging.warning("Nextcloud user %s is missing, deleting bot DB record", user["nc_user_id"])
+            await db.delete_user(telegram_id)
+            await message.answer("Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.")
+            return
         await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard())
+        logging.info("Approved user opened account panel: telegram_id=%s", telegram_id)
         return
 
     if user["status"] == "rejected":
@@ -262,6 +290,7 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
         "<b>Заявка отправлена</b>\n\n"
         "Администратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов."
     )
+    logging.info("Beta request created/updated: telegram_id=%s username=%s", telegram_id, message.from_user.username)
     admin_text = (
         "<b>Новая заявка на beta-тест</b>\n"
         "<code>--------------------------------</code>\n\n"
@@ -301,83 +330,38 @@ async def health_command(message: Message, nc: NextcloudClient, config: Config) 
     )
 
 
-@router.message(Command("stickers"))
-async def stickers_command(message: Message, db: Database, config: Config) -> None:
+@router.message(Command("sync"))
+async def sync_command(message: Message, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
-    await message.answer(await stickers_text(db, config))
+    try:
+        checked, removed = await sync_nextcloud_users(db, nc)
+    except Exception as exc:
+        logging.exception("Manual Nextcloud sync failed")
+        await message.answer(f"{event_mark('error')} Синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
+        return
+    await message.answer(f"{event_mark('sync')} Синхронизация завершена.\nПроверено: <b>{checked}</b>\nУдалено из БД бота: <b>{removed}</b>")
 
 
-async def stickers_text(db: Database, config: Config) -> str:
-    settings = await db.list_settings("sticker_")
-    return (
-        "<b>Стикеры бота</b>\n\n"
-        f"welcome: <b>{'есть' if settings.get('sticker_welcome') or config.sticker_welcome else 'нет'}</b>\n"
-        f"approved: <b>{'есть' if settings.get('sticker_approved') or config.sticker_approved else 'нет'}</b>\n"
-        f"upload_ok: <b>{'есть' if settings.get('sticker_upload_ok') or config.sticker_upload_ok else 'нет'}</b>\n"
-        f"error: <b>{'есть' if settings.get('sticker_error') or config.sticker_error else 'нет'}</b>\n\n"
-        "Чтобы задать стикер, отправьте команду:\n"
-        "<code>/setsticker welcome</code>\n"
-        "<code>/setsticker approved</code>\n"
-        "<code>/setsticker upload_ok</code>\n"
-        "<code>/setsticker error</code>\n\n"
-        "После команды отправьте нужный стикер."
-    )
-
-
-@router.callback_query(F.data == "stickers")
-async def stickers_panel(callback: CallbackQuery, db: Database, config: Config) -> None:
+@router.callback_query(F.data == "sync")
+async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not callback.from_user or not is_admin(callback.from_user.id, config):
         await callback.answer("Нет доступа", show_alert=True)
         return
-    await callback.message.edit_text(await stickers_text(db, config), reply_markup=admin_keyboard())
-    await callback.answer()
-
-
-@router.message(Command("setsticker"))
-async def set_sticker_command(message: Message, state: FSMContext, config: Config) -> None:
-    if not message.from_user or not is_admin(message.from_user.id, config):
+    try:
+        checked, removed = await sync_nextcloud_users(db, nc)
+    except Exception as exc:
+        logging.exception("Manual Nextcloud sync failed")
+        await callback.message.answer(f"{event_mark('error')} Синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
+        await callback.answer("Ошибка", show_alert=True)
         return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) != 2 or parts[1].strip() not in {"welcome", "approved", "upload_ok", "error"}:
-        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error</code>")
-        return
-    event = parts[1].strip()
-    await state.set_state(StickerState.waiting_sticker)
-    await state.update_data(sticker_event=event)
-    await message.answer(f"Теперь отправьте стикер для события <code>{event}</code>.")
-
-
-@router.message(StickerState.waiting_sticker, F.sticker)
-async def save_sticker(message: Message, state: FSMContext, db: Database, config: Config) -> None:
-    if not message.from_user or not is_admin(message.from_user.id, config) or not message.sticker:
-        return
-    data = await state.get_data()
-    event = data["sticker_event"]
-    await db.set_setting(f"sticker_{event}", message.sticker.file_id)
-    await state.clear()
-    await message.answer(f"Стикер для <code>{event}</code> сохранен.")
-
-
-@router.message(StateFilter(None), F.sticker)
-async def sticker_file_id(message: Message, config: Config) -> None:
-    if not message.from_user or not is_admin(message.from_user.id, config) or not message.sticker:
-        return
-    await message.answer(
-        "Это file_id стикера:\n"
-        f"<code>{html.escape(message.sticker.file_id)}</code>\n\n"
-        "Можно сохранить его командой <code>/setsticker welcome</code> и затем отправить этот стикер еще раз."
+    await callback.message.edit_text(
+        f"{event_mark('sync')} <b>Синхронизация завершена</b>\n\n"
+        f"Проверено: <b>{checked}</b>\n"
+        f"Удалено из БД бота: <b>{removed}</b>",
+        reply_markup=admin_keyboard(),
     )
-
-
-@router.callback_query(F.data == "account:status")
-async def account_status(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
-    user = await db.get_user(callback.from_user.id)
-    if not user or user["status"] != "approved" or user["is_disabled"]:
-        await callback.answer("Доступ не активен", show_alert=True)
-        return
-    await callback.message.edit_text(await account_text(user, nc, config), reply_markup=account_keyboard())
-    await callback.answer("Обновлено")
+    await callback.answer("Готово")
 
 
 @router.callback_query(F.data == "account:change_password")
@@ -424,9 +408,8 @@ async def account_change_password_apply(
 
     await db.set_nextcloud_password(user["telegram_id"], password)
     await state.clear()
-    await send_event_sticker(bot, db, config, message.chat.id, "approved")
     await message.answer(
-        "Пароль сменен.\n\n"
+        f"{event_mark('approved')} Пароль сменен.\n\n"
         f"Логин: <code>{html.escape(user['nc_user_id'])}</code>\n"
         f"Новый пароль: <code>{html.escape(password)}</code>",
         reply_markup=account_keyboard(),
@@ -464,15 +447,15 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
         await bot.download(file_id, destination=temp_path)
         remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], config.upload_folder, filename, temp_path)
         updated_storage = await storage_text(user, nc)
-        await send_event_sticker(bot, db, config, message.chat.id, "upload_ok")
+        logging.info("Upload completed: telegram_id=%s remote_path=%s size=%s", user["telegram_id"], remote_path, file_size)
         await status_message.edit_text(
-            f"<b>Файл загружен</b>\n\n"
+            f"{event_mark('upload_ok')} <b>Файл загружен</b>\n\n"
             f"Путь: <code>{html.escape(remote_path)}</code>\n\n"
             f"{updated_storage}"
         )
     except NextcloudError as exc:
-        await send_event_sticker(bot, db, config, message.chat.id, "error")
-        await status_message.edit_text(f"Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
+        logging.warning("Upload failed for telegram_id=%s filename=%s: %s", user["telegram_id"], filename, exc)
+        await status_message.edit_text(f"{event_mark('error')} Не удалось загрузить файл в Nextcloud: <code>{html.escape(str(exc))}</code>")
     except Exception as exc:
         logging.exception("Failed to upload Telegram file to Nextcloud")
         await status_message.edit_text(f"Не удалось обработать файл: <code>{html.escape(str(exc))}</code>")
@@ -511,10 +494,10 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         return
 
     await db.approve_user(telegram_id, nc_user_id, password, config.default_quota_gb)
-    await send_event_sticker(bot, db, config, telegram_id, "approved")
+    logging.info("User approved: telegram_id=%s nc_user_id=%s quota_gb=%s", telegram_id, nc_user_id, config.default_quota_gb)
     await bot.send_message(
         telegram_id,
-        "<b>Ваша заявка одобрена</b>\n"
+        f"{event_mark('approved')} <b>Ваша заявка одобрена</b>\n"
         "<code>--------------------------------</code>\n\n"
         f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
         f"Логин: <code>{nc_user_id}</code>\n"
@@ -537,6 +520,7 @@ async def reject_user(callback: CallbackQuery, bot: Bot, db: Database, config: C
         return
     telegram_id = int(callback.data.split(":", 1)[1])
     await db.reject_user(telegram_id)
+    logging.info("User rejected: telegram_id=%s", telegram_id)
     try:
         await bot.send_message(telegram_id, "Ваша заявка на beta-тест отклонена.")
     except Exception:
@@ -796,6 +780,7 @@ async def delete_user_confirm(callback: CallbackQuery, bot: Bot, db: Database, n
             return
 
     await db.delete_user(telegram_id)
+    logging.warning("User deleted: telegram_id=%s nc_user_id=%s", telegram_id, user.get("nc_user_id"))
     try:
         await bot.send_message(telegram_id, "Ваш beta-доступ Nextcloud был удален администратором.")
     except Exception:
@@ -812,7 +797,11 @@ async def backup_panel(callback: CallbackQuery, config: Config) -> None:
     if not is_admin(callback.from_user.id, config):
         await callback.answer("Нет доступа", show_alert=True)
         return
-    await callback.message.edit_text("<b>Бекапы</b>\n\nВыберите формат.", reply_markup=backup_keyboard())
+    await callback.message.edit_text(
+        f"{event_mark('backup')} <b>Бекапы</b>\n\n"
+        "Все бекапы сжимаются в .gz, хранятся на сервере и автоматически чистятся по retention.",
+        reply_markup=backup_keyboard(),
+    )
     await callback.answer()
 
 
@@ -822,7 +811,9 @@ async def backup_db(callback: CallbackQuery, db: Database, config: Config) -> No
         await callback.answer("Нет доступа", show_alert=True)
         return
     path = create_sqlite_backup(db.path, config.backup_dir)
-    await callback.message.answer_document(FSInputFile(path), caption="SQLite-бекап базы бота")
+    prune_old_backups(config.backup_dir, config.backup_retention_days)
+    logging.info("Manual SQLite backup created: %s", path)
+    await callback.message.answer_document(FSInputFile(path), caption="Сжатый SQLite-бекап базы бота")
     await callback.answer("Бекап отправлен")
 
 
@@ -832,8 +823,68 @@ async def backup_json(callback: CallbackQuery, db: Database, config: Config) -> 
         await callback.answer("Нет доступа", show_alert=True)
         return
     path = await create_json_backup(db, config.backup_dir)
-    await callback.message.answer_document(FSInputFile(path), caption="JSON-бекап пользователей")
+    prune_old_backups(config.backup_dir, config.backup_retention_days)
+    logging.info("Manual JSON backup created: %s", path)
+    await callback.message.answer_document(FSInputFile(path), caption="Сжатый JSON-бекап пользователей")
     await callback.answer("Бекап отправлен")
+
+
+@router.callback_query(F.data == "backup:list")
+async def backup_list(callback: CallbackQuery, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    backups = list_backup_files(config.backup_dir, limit=10)
+    if not backups:
+        await callback.message.edit_text("Сжатых SQLite-бекапов пока нет.", reply_markup=backup_keyboard())
+        await callback.answer()
+        return
+    text = f"{event_mark('backup')} <b>Последние SQLite-бекапы</b>\n\n"
+    for index, path in enumerate(backups, start=1):
+        text += f"{index}. <code>{html.escape(path.name)}</code> ({format_bytes(path.stat().st_size)})\n"
+    await callback.message.edit_text(text, reply_markup=backup_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "backup:restore")
+async def backup_restore_panel(callback: CallbackQuery, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    backups = list_backup_files(config.backup_dir, limit=10)
+    if not backups:
+        await callback.message.edit_text("Нет SQLite-бекапов для восстановления.", reply_markup=backup_keyboard())
+        await callback.answer()
+        return
+    items = [(str(index), path.name) for index, path in enumerate(backups)]
+    await callback.message.edit_text(
+        f"{event_mark('backup')} <b>Восстановление бекапа</b>\n\n"
+        "Выберите SQLite-бекап. Перед восстановлением будет создан свежий safety-бекап.",
+        reply_markup=restore_backup_keyboard(items),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("restore:"))
+async def backup_restore(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    backups = list_backup_files(config.backup_dir, limit=10)
+    index = int(callback.data.split(":", 1)[1])
+    if index < 0 or index >= len(backups):
+        await callback.answer("Бекап не найден", show_alert=True)
+        return
+    safety = create_sqlite_backup(db.path, config.backup_dir)
+    restore_sqlite_backup(backups[index], db.path)
+    logging.warning("Database restored from %s; safety backup: %s", backups[index], safety)
+    await callback.message.edit_text(
+        f"{event_mark('backup')} База восстановлена из <code>{html.escape(backups[index].name)}</code>.\n\n"
+        f"Safety-бекап перед восстановлением: <code>{html.escape(safety.name)}</code>\n"
+        "Рекомендуется перезапустить бота.",
+        reply_markup=admin_keyboard(),
+    )
+    await callback.answer("Восстановлено")
 
 
 @router.callback_query(F.data == "broadcast")
@@ -900,9 +951,45 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext, bot: Bot, d
     await callback.answer("Готово")
 
 
+def configure_logging(config: Config) -> None:
+    config.log_dir.mkdir(parents=True, exist_ok=True)
+    log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    handlers: list[logging.Handler] = [
+        logging.StreamHandler(),
+        RotatingFileHandler(
+            config.log_dir / "bot.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
+    ]
+    logging.basicConfig(level=logging.INFO, format=log_format, handlers=handlers, force=True)
+
+
+async def auto_backup_loop(db: Database, config: Config) -> None:
+    while True:
+        try:
+            path = create_sqlite_backup(db.path, config.backup_dir)
+            removed = prune_old_backups(config.backup_dir, config.backup_retention_days)
+            logging.info("Automatic backup created: %s; removed_old=%s", path, removed)
+        except Exception:
+            logging.exception("Automatic backup failed")
+        await asyncio.sleep(config.auto_backup_interval_hours * 60 * 60)
+
+
+async def nextcloud_sync_loop(db: Database, nc: NextcloudClient, config: Config) -> None:
+    while True:
+        try:
+            await sync_nextcloud_users(db, nc)
+        except Exception:
+            logging.exception("Automatic Nextcloud sync failed")
+        await asyncio.sleep(config.nextcloud_sync_interval_minutes * 60)
+
+
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     config = load_config()
+    configure_logging(config)
+    logging.info("Bot starting. public_nextcloud=%s internal_nextcloud=%s", config.nextcloud_url, config.nextcloud_internal_url)
 
     db = Database(config.database_path)
     await db.init()
@@ -920,10 +1007,17 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
+    background_tasks = [
+        asyncio.create_task(auto_backup_loop(db, config)),
+        asyncio.create_task(nextcloud_sync_loop(db, nc, config)),
+    ]
 
     try:
         await dp.start_polling(bot, db=db, config=config, nc=nc)
     finally:
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         await nc.close()
         await bot.session.close()
 

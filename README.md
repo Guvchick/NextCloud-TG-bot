@@ -15,7 +15,11 @@
 - Есть отключение и включение Nextcloud-пользователя.
 - Пользователь может отправить файл, фото, видео, аудио или документ прямо в бота, а бот загрузит его в Nextcloud.
 - Пользователь сразу видит текущий пароль в `/start` и может сменить его через кнопку.
-- Бот поддерживает стикеры для ключевых событий: их можно задать через админ-панель или через `file_id` в `.env`.
+- В пользовательском экране всегда видны квота, занятое место и шкала заполнения.
+- Есть ссылка на саппорт в Telegram и email.
+- Есть синхронизация с Nextcloud: если пользователя уже нет в Nextcloud, запись удаляется из базы бота.
+- Есть сжатые SQLite/JSON-бекапы, восстановление из SQLite-бекапа, авто-бекап и чистка старых файлов.
+- Есть логи в stdout и `./logs/bot.log`.
 - Есть панель бекапов: SQLite-база или JSON-экспорт отправляются в Telegram.
 - Есть рассылка по всем активным одобренным пользователям.
 
@@ -42,11 +46,13 @@ NEXTCLOUD_ADMIN_PASSWORD=nextcloud-app-password
 DEFAULT_QUOTA_GB=10
 DATABASE_PATH=data/bot.sqlite3
 BACKUP_DIR=backups
+LOG_DIR=logs
 UPLOAD_FOLDER=Telegram uploads
-STICKER_WELCOME=
-STICKER_APPROVED=
-STICKER_UPLOAD_OK=
-STICKER_ERROR=
+SUPPORT_TELEGRAM=@support_username
+SUPPORT_EMAIL=support@example.com
+BACKUP_RETENTION_DAYS=7
+AUTO_BACKUP_INTERVAL_HOURS=24
+NEXTCLOUD_SYNC_INTERVAL_MINUTES=60
 ```
 
 `ADMIN_IDS` - это Telegram ID администраторов через запятую.
@@ -72,7 +78,7 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 `UPLOAD_FOLDER` - папка в Nextcloud пользователя, куда бот будет складывать файлы из Telegram.
 Если Nextcloud запретит создать эту папку, бот попробует загрузить файл в корень диска пользователя.
 
-`STICKER_*` - необязательные `file_id` стикеров Telegram. Проще настроить их прямо в боте: откройте админ-панель, нажмите `Стикеры`, затем используйте `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok` или `/setsticker error` и отправьте нужный стикер.
+`SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю как ссылки для связи с саппортом.
 
 ## Запуск локально
 
@@ -89,13 +95,22 @@ python -m bot.main
 docker compose up -d --build
 ```
 
-Данные базы будут храниться в `./data`, бекапы - в `./backups`.
+Данные базы будут храниться в `./data`, бекапы - в `./backups`, логи - в `./logs`.
 
 ## Команды
 
 - `/start` - для пользователя отправляет заявку, для админа открывает панель.
 - `/admin` - открывает админ-панель.
 - `/health` - проверяет, может ли бот достучаться до Nextcloud API.
+- `/sync` - вручную сверяет базу бота с Nextcloud и удаляет из бота отсутствующих Nextcloud-пользователей.
+
+## Бекапы
+
+Бот автоматически создает сжатый SQLite-бекап каждые `AUTO_BACKUP_INTERVAL_HOURS` часов. Старые файлы старше `BACKUP_RETENTION_DAYS` дней удаляются автоматически.
+
+В админ-панели `Бекапы` можно создать сжатый SQLite-бекап, создать сжатый JSON-экспорт, посмотреть последние SQLite-бекапы на сервере и восстановить базу из SQLite-бекапа.
+
+Перед восстановлением бот создает safety-бекап текущей базы. После восстановления лучше перезапустить контейнер.
 
 ## Загрузка файлов
 
