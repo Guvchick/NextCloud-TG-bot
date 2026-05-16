@@ -9,3 +9,4 @@ services:
       - ./backups:/app/backups
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "${NEXTCLOUD_HOSTNAME:-cloud.example.com}:host-gateway"

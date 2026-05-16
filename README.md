@@ -36,6 +36,7 @@ BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789,987654321
 NEXTCLOUD_URL=https://cloud.example.com
 NEXTCLOUD_INTERNAL_URL=
+NEXTCLOUD_HOSTNAME=cloud.example.com
 NEXTCLOUD_ADMIN_USER=admin
 NEXTCLOUD_ADMIN_PASSWORD=nextcloud-app-password
 DEFAULT_QUOTA_GB=10
@@ -57,6 +58,16 @@ STICKER_ERROR=
 - Nextcloud в том же Docker network: `NEXTCLOUD_INTERNAL_URL=http://nextcloud`
 - Nextcloud установлен прямо на хосте, а бот в Docker: `NEXTCLOUD_INTERNAL_URL=http://host.docker.internal`
 - Nextcloud доступен только через публичный домен: оставьте пустым, бот возьмет `NEXTCLOUD_URL`
+
+Если `http://host.docker.internal` редиректит на HTTPS и ломается TLS, используйте публичный домен как внутренний URL, но направьте домен на Docker host:
+
+```env
+NEXTCLOUD_URL=https://claud.kys-paw.life
+NEXTCLOUD_INTERNAL_URL=https://claud.kys-paw.life
+NEXTCLOUD_HOSTNAME=claud.kys-paw.life
+```
+
+В `docker-compose.yml` уже есть `extra_hosts`, который направит `NEXTCLOUD_HOSTNAME` на `host-gateway`.
 
 `UPLOAD_FOLDER` - папка в Nextcloud пользователя, куда бот будет складывать файлы из Telegram.
 Если Nextcloud запретит создать эту папку, бот попробует загрузить файл в корень диска пользователя.
