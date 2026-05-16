@@ -12,6 +12,7 @@ class Config:
     bot_token: str
     admin_ids: set[int]
     nextcloud_url: str
+    nextcloud_internal_url: str
     nextcloud_admin_user: str
     nextcloud_admin_password: str
     default_quota_gb: int
@@ -54,10 +55,14 @@ def load_config() -> Config:
     if default_quota_gb <= 0:
         raise RuntimeError("DEFAULT_QUOTA_GB must be greater than zero")
 
+    nextcloud_url = _required("NEXTCLOUD_URL").rstrip("/")
+    nextcloud_internal_url = os.getenv("NEXTCLOUD_INTERNAL_URL", nextcloud_url).strip().rstrip("/")
+
     return Config(
         bot_token=_required("BOT_TOKEN"),
         admin_ids=_admin_ids(_required("ADMIN_IDS")),
-        nextcloud_url=_required("NEXTCLOUD_URL").rstrip("/"),
+        nextcloud_url=nextcloud_url,
+        nextcloud_internal_url=nextcloud_internal_url,
         nextcloud_admin_user=_required("NEXTCLOUD_ADMIN_USER"),
         nextcloud_admin_password=_required("NEXTCLOUD_ADMIN_PASSWORD"),
         default_quota_gb=default_quota_gb,

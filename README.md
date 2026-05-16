@@ -35,6 +35,7 @@ cp .env.example .env
 BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789,987654321
 NEXTCLOUD_URL=https://cloud.example.com
+NEXTCLOUD_INTERNAL_URL=
 NEXTCLOUD_ADMIN_USER=admin
 NEXTCLOUD_ADMIN_PASSWORD=nextcloud-app-password
 DEFAULT_QUOTA_GB=10
@@ -48,6 +49,14 @@ STICKER_ERROR=
 ```
 
 `ADMIN_IDS` - это Telegram ID администраторов через запятую.
+
+`NEXTCLOUD_URL` - публичный адрес, который бот показывает пользователям.
+
+`NEXTCLOUD_INTERNAL_URL` - внутренний адрес, по которому сам бот ходит в Nextcloud API/WebDAV. Если бот и Nextcloud на одном сервере, лучше задать его отдельно:
+
+- Nextcloud в том же Docker network: `NEXTCLOUD_INTERNAL_URL=http://nextcloud`
+- Nextcloud установлен прямо на хосте, а бот в Docker: `NEXTCLOUD_INTERNAL_URL=http://host.docker.internal`
+- Nextcloud доступен только через публичный домен: оставьте пустым, бот возьмет `NEXTCLOUD_URL`
 
 `UPLOAD_FOLDER` - папка в Nextcloud пользователя, куда бот будет складывать файлы из Telegram.
 Если Nextcloud запретит создать эту папку, бот попробует загрузить файл в корень диска пользователя.
@@ -75,6 +84,7 @@ docker compose up -d --build
 
 - `/start` - для пользователя отправляет заявку, для админа открывает панель.
 - `/admin` - открывает админ-панель.
+- `/health` - проверяет, может ли бот достучаться до Nextcloud API.
 
 ## Загрузка файлов
 

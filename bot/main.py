@@ -278,6 +278,23 @@ async def admin_command(message: Message, db: Database, config: Config) -> None:
     await message.answer(await admin_summary_text(db), reply_markup=admin_keyboard())
 
 
+@router.message(Command("health"))
+async def health_command(message: Message, nc: NextcloudClient, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    try:
+        await nc.check_connection()
+        status = "Nextcloud API доступен"
+    except Exception as exc:
+        status = f"Nextcloud API недоступен: <code>{html.escape(str(exc))}</code>"
+    await message.answer(
+        "<b>Проверка Nextcloud</b>\n\n"
+        f"Публичный URL: <code>{html.escape(config.nextcloud_url)}</code>\n"
+        f"Внутренний URL: <code>{html.escape(config.nextcloud_internal_url)}</code>\n\n"
+        f"{status}"
+    )
+
+
 @router.message(Command("stickers"))
 async def stickers_command(message: Message, db: Database, config: Config) -> None:
     if not message.from_user or not is_admin(message.from_user.id, config):
@@ -886,7 +903,7 @@ async def main() -> None:
 
     nc = NextcloudClient(
         NextcloudCredentials(
-            base_url=config.nextcloud_url,
+            base_url=config.nextcloud_internal_url,
             username=config.nextcloud_admin_user,
             password=config.nextcloud_admin_password,
         )

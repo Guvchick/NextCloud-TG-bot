@@ -7,3 +7,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

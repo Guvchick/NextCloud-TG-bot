@@ -145,6 +145,9 @@ class NextcloudClient:
                 return
             raise
 
+    async def check_connection(self) -> None:
+        await self._request("GET", "/ocs/v2.php/cloud/capabilities")
+
     async def get_quota(self, user_id: str, password: str) -> dict[str, int | None]:
         body = """<?xml version="1.0"?>
 <d:propfind xmlns:d="DAV:">
