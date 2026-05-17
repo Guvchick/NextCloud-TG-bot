@@ -8,6 +8,7 @@ def _labels(lang: str) -> dict[str, str]:
     if lang == "en":
         return {
             "change_password": "🔐 Change password",
+            "cloud_login": "☁️ Open cloud",
             "support": "💬 Support",
             "donate": "💙 Donate",
             "stars": "⭐ Telegram Stars",
@@ -21,6 +22,7 @@ def _labels(lang: str) -> dict[str, str]:
         }
     return {
         "change_password": "🔐 Сменить пароль",
+        "cloud_login": "☁️ Войти в облако",
         "support": "💬 Поддержка",
         "donate": "💙 Донат",
         "stars": "⭐ Telegram Stars",
@@ -34,9 +36,16 @@ def _labels(lang: str) -> dict[str, str]:
     }
 
 
-def account_keyboard(lang: str = "ru", show_support: bool = True, show_donate: bool = True) -> InlineKeyboardMarkup:
+def account_keyboard(
+    lang: str = "ru",
+    show_support: bool = True,
+    show_donate: bool = True,
+    cloud_url: str | None = None,
+) -> InlineKeyboardMarkup:
     labels = _labels(lang)
     builder = InlineKeyboardBuilder()
+    if cloud_url:
+        builder.button(text=labels["cloud_login"], url=cloud_url)
     builder.button(text=labels["change_password"], callback_data="account:change_password")
     if show_support:
         builder.button(text=labels["support"], callback_data="account:support")

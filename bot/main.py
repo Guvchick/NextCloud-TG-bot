@@ -139,6 +139,7 @@ TEXT = {
     "ru": {
         "account_title": "Ваше облако",
         "server": "Сервер",
+        "cloud_link": "Ссылка",
         "login": "Логин",
         "password": "Пароль",
         "password_missing": "не сохранен",
@@ -202,6 +203,7 @@ TEXT = {
     "en": {
         "account_title": "Your Cloud",
         "server": "Server",
+        "cloud_link": "Link",
         "login": "Login",
         "password": "Password",
         "password_missing": "not saved",
@@ -339,7 +341,12 @@ def donate_enabled(config: Config) -> bool:
 
 
 def account_markup(config: Config, lang: str):
-    return account_keyboard(lang, show_support=support_enabled(config), show_donate=donate_enabled(config))
+    return account_keyboard(
+        lang,
+        show_support=support_enabled(config),
+        show_donate=donate_enabled(config),
+        cloud_url=config.nextcloud_url,
+    )
 
 
 def stars_amounts(config: Config) -> tuple[int, ...]:
@@ -458,6 +465,7 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
         f"{event_mark('welcome')} ✨ <b>{tr(lang, 'account_title')}</b> ✨\n"
         "<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"
         f"{supporter_line}"
+        f"🌐 {tr(lang, 'cloud_link')}: <a href=\"{html.escape(config.nextcloud_url)}\">{html.escape(config.nextcloud_url)}</a>\n"
         f"🆔 {tr(lang, 'login')}: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
         f"{password_line}"
         f"💾 {tr(lang, 'quota')}: <b>{user['quota_gb']} GB</b>\n"
