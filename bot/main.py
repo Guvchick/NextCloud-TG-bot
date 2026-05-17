@@ -88,14 +88,13 @@ def valid_password(password: str) -> bool:
 
 TEXT = {
     "ru": {
-        "account_title": "Ваш Nextcloud-диск",
+        "account_title": "Ваше облако",
         "server": "Сервер",
         "login": "Логин",
         "password": "Пароль",
         "password_missing": "не сохранен",
         "quota": "Квота",
-        "upload_hint": "Отправьте файл в этот чат, и бот загрузит его в Nextcloud.",
-        "support": "Саппорт",
+        "upload_hint": "Отправьте файл в этот чат, и бот загрузит его в облако.",
         "support_title": "Поддержка",
         "support_empty": "Контакты поддержки пока не настроены.",
         "donate_title": "Донат",
@@ -103,7 +102,7 @@ TEXT = {
         "donate_text": "Поддержать проект можно по ссылке ниже.",
         "language_title": "Выберите язык",
         "language_saved": "Язык сохранен.",
-        "change_password_prompt": "Отправьте новый пароль для Nextcloud.\n\nМинимум 8 символов. После смены бот обновит сохраненный пароль для загрузок.",
+        "change_password_prompt": "Отправьте новый пароль для облака.\n\nМинимум 8 символов. После смены бот обновит сохраненный пароль для загрузок.",
         "password_invalid": "Пароль должен быть от 8 до 128 символов.",
         "password_changed": "Пароль сменен.",
         "password_change_failed": "Не удалось сменить пароль",
@@ -111,19 +110,19 @@ TEXT = {
         "upload_not_allowed": "Загрузка доступна только одобренным активным пользователям.",
         "webdav_password_missing": "Для этого аккаунта нет сохраненного WebDAV-пароля. Попросите администратора сбросить пароль в панели.",
         "file_unknown": "Не удалось определить файл для загрузки.",
-        "file_too_big": "Telegram не дает боту скачать этот файл: он больше <b>{limit} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс Nextcloud.",
-        "uploading": "Загружаю <b>{filename}</b> ({size}) в Nextcloud...",
+        "file_too_big": "Telegram не дает боту скачать этот файл: он больше <b>{limit} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака.",
+        "uploading": "Загружаю <b>{filename}</b> ({size}) в облако...",
         "uploaded": "Файл загружен",
         "path": "Путь",
-        "telegram_download_failed": "Telegram не дает боту скачать этот файл.\n\nЛимит для загрузки через бота: <b>{limit} MB</b>.\nЗагрузите большой файл напрямую через Nextcloud.",
-        "upload_failed": "Не удалось загрузить файл в Nextcloud",
+        "telegram_download_failed": "Telegram не дает боту скачать этот файл.\n\nЛимит для загрузки через бота: <b>{limit} MB</b>.\nЗагрузите большой файл напрямую через облако.",
+        "upload_failed": "Не удалось загрузить файл в облако",
         "processing_failed": "Не удалось обработать файл",
         "approved_title": "Ваша заявка одобрена",
-        "approved_hint": "Файлы можно отправлять прямо сюда: бот загрузит их в Nextcloud.\nПароль всегда виден в /start, там же его можно сменить.",
-        "request_sent_title": "Заявка отправлена",
+        "approved_hint": "Файлы можно отправлять прямо сюда: бот загрузит их в облако.\nПароль всегда виден в /start, там же его можно сменить.",
+        "request_sent_title": "Заявка отправлена ✨",
         "request_sent": "Администратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов.",
         "request_rejected": "Ваша заявка на beta-тест сейчас отклонена.",
-        "account_missing": "Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.",
+        "account_missing": "Аккаунт не найден в облаке, запись бота очищена. Отправьте /start еще раз.",
         "used": "Занято",
         "available": "Доступно",
         "free": "свободно",
@@ -131,13 +130,13 @@ TEXT = {
         "usage_failed": "не удалось обновить",
     },
     "en": {
-        "account_title": "Your Nextcloud Drive",
+        "account_title": "Your Cloud",
         "server": "Server",
         "login": "Login",
         "password": "Password",
         "password_missing": "not saved",
         "quota": "Quota",
-        "upload_hint": "Send a file to this chat and the bot will upload it to Nextcloud.",
+        "upload_hint": "Send a file to this chat and the bot will upload it to the cloud.",
         "support": "Support",
         "support_title": "Support",
         "support_empty": "Support contacts are not configured yet.",
@@ -146,7 +145,7 @@ TEXT = {
         "donate_text": "You can support the project using the link below.",
         "language_title": "Choose language",
         "language_saved": "Language saved.",
-        "change_password_prompt": "Send a new Nextcloud password.\n\nMinimum 8 characters. The bot will update the saved password for uploads.",
+        "change_password_prompt": "Send a new cloud password.\n\nMinimum 8 characters. The bot will update the saved password for uploads.",
         "password_invalid": "Password must be 8 to 128 characters.",
         "password_changed": "Password changed.",
         "password_change_failed": "Could not change password",
@@ -154,19 +153,19 @@ TEXT = {
         "upload_not_allowed": "Uploads are available only to approved active users.",
         "webdav_password_missing": "No saved WebDAV password for this account. Ask an admin to reset the password.",
         "file_unknown": "Could not detect a file to upload.",
-        "file_too_big": "Telegram does not allow the bot to download this file: it is larger than <b>{limit} MB</b>.\n\nUpload large files directly through the Nextcloud web interface.",
-        "uploading": "Uploading <b>{filename}</b> ({size}) to Nextcloud...",
+        "file_too_big": "Telegram does not allow the bot to download this file: it is larger than <b>{limit} MB</b>.\n\nUpload large files directly through the cloud web interface.",
+        "uploading": "Uploading <b>{filename}</b> ({size}) to the cloud...",
         "uploaded": "File uploaded",
         "path": "Path",
-        "telegram_download_failed": "Telegram does not allow the bot to download this file.\n\nBot upload limit: <b>{limit} MB</b>.\nUpload large files directly through Nextcloud.",
-        "upload_failed": "Could not upload file to Nextcloud",
+        "telegram_download_failed": "Telegram does not allow the bot to download this file.\n\nBot upload limit: <b>{limit} MB</b>.\nUpload large files directly through the cloud.",
+        "upload_failed": "Could not upload file to the cloud",
         "processing_failed": "Could not process file",
         "approved_title": "Your request was approved",
-        "approved_hint": "You can send files here and the bot will upload them to Nextcloud.\nYour password is always visible in /start, and you can change it there.",
+        "approved_hint": "You can send files here and the bot will upload them to the cloud.\nYour password is always visible in /start, and you can change it there.",
         "request_sent_title": "Request sent",
         "request_sent": "The administrator will review beta access. I will notify you when the account is ready.",
         "request_rejected": "Your beta-test request is currently rejected.",
-        "account_missing": "The account was not found in Nextcloud, so the bot record was cleared. Send /start again.",
+        "account_missing": "The account was not found in the cloud, so the bot record was cleared. Send /start again.",
         "used": "Used",
         "available": "Available",
         "free": "free",
@@ -307,48 +306,36 @@ async def storage_text(user: dict, nc: NextcloudClient, lang: str = "ru") -> str
     total = used + available if used is not None and available is not None and available >= 0 else None
     if used == 0 and available is not None and available >= 0:
         return (
-            f"{tr(lang, 'used')}: <b>0 B</b>\n"
-            f"{tr(lang, 'available')}: <b>{format_bytes(available)}</b>\n"
-            f"<code>{usage_bar(used, available)}</code> 0.0%"
+            f"☁️ {tr(lang, 'used')}: <b>0 B</b>\n"
+            f"🟢 {tr(lang, 'available')}: <b>{format_bytes(available)}</b>\n"
+            f"📊 <code>{usage_bar(used, available)}</code> 0.0%"
         )
     if total:
         percent = used / total * 100 if used is not None else 0
         return (
-            f"{tr(lang, 'used')}: <b>{format_bytes(used)}</b> / <b>{format_bytes(total)}</b>\n"
-            f"<code>{usage_bar(used, available)}</code> {percent:.1f}%"
+            f"☁️ {tr(lang, 'used')}: <b>{format_bytes(used)}</b> / <b>{format_bytes(total)}</b>\n"
+            f"📊 <code>{usage_bar(used, available)}</code> {percent:.1f}%"
         )
-    return f"{tr(lang, 'used')}: <b>{format_bytes(used)}</b>, {tr(lang, 'free')}: <b>{format_bytes(available)}</b>"
+    return f"☁️ {tr(lang, 'used')}: <b>{format_bytes(used)}</b>, 🟢 {tr(lang, 'free')}: <b>{format_bytes(available)}</b>"
 
 
 async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
     lang = lang_of(user)
     password = user.get("nc_password")
     password_line = (
-        f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
+        f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
         if password
-        else f"{tr(lang, 'password')}: <b>{tr(lang, 'password_missing')}</b>\n"
+        else f"🔐 {tr(lang, 'password')}: <b>{tr(lang, 'password_missing')}</b>\n"
     )
-    support_parts = []
-    if config.support_telegram:
-        telegram = config.support_telegram.strip()
-        if telegram.startswith("http://") or telegram.startswith("https://"):
-            support_parts.append(f'<a href="{html.escape(telegram)}">Telegram</a>')
-        else:
-            username = telegram.lstrip("@")
-            support_parts.append(f'<a href="https://t.me/{html.escape(username)}">@{html.escape(username)}</a>')
-    if config.support_email:
-        support_parts.append(f'<a href="mailto:{html.escape(config.support_email)}">{html.escape(config.support_email)}</a>')
-    support_line = f"\n{tr(lang, 'support')}: " + " | ".join(support_parts) if support_parts else ""
     return (
-        f"{event_mark('welcome')} <b>{tr(lang, 'account_title')}</b>\n"
-        "<code>--------------------------------</code>\n\n"
-        f"{tr(lang, 'server')}: <b>{html.escape(config.nextcloud_url)}</b>\n"
-        f"{tr(lang, 'login')}: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
+        f"{event_mark('welcome')} ✨ <b>{tr(lang, 'account_title')}</b> ✨\n"
+        "<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"
+        f"🆔 {tr(lang, 'login')}: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
         f"{password_line}"
-        f"{tr(lang, 'quota')}: <b>{user['quota_gb']} GB</b>\n"
+        f"💾 {tr(lang, 'quota')}: <b>{user['quota_gb']} GB</b>\n"
         "\n"
         f"{await storage_text(user, nc, lang)}\n\n"
-        f"{tr(lang, 'upload_hint')}{support_line}"
+        f"📤 {tr(lang, 'upload_hint')}"
     )
 
 
@@ -833,10 +820,9 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         telegram_id,
         f"{event_mark('approved')} <b>{tr(lang, 'approved_title')}</b>\n"
         "<code>--------------------------------</code>\n\n"
-        f"Nextcloud: <b>{html.escape(config.nextcloud_url)}</b>\n"
-        f"{tr(lang, 'login')}: <code>{nc_user_id}</code>\n"
-        f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
-        f"{tr(lang, 'quota')}: <b>{config.default_quota_gb} GB</b>\n\n"
+        f"🆔 {tr(lang, 'login')}: <code>{nc_user_id}</code>\n"
+        f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
+        f"💾 {tr(lang, 'quota')}: <b>{config.default_quota_gb} GB</b>\n\n"
         f"{tr(lang, 'approved_hint')}",
         reply_markup=account_keyboard(lang),
     )
