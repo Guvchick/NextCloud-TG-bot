@@ -59,6 +59,10 @@ type Config struct {
 	BackupRetentionDays          int
 	AutoBackupIntervalHours      int
 	NextcloudSyncIntervalMinutes int
+	StickerWelcome               string
+	StickerApproved              string
+	StickerUploadOK              string
+	StickerError                 string
 }
 
 type App struct {
@@ -106,11 +110,14 @@ const (
 	StateChangePassword StateKind = "change_password"
 	StateQuotaCustom    StateKind = "quota_custom"
 	StateAdminSearch    StateKind = "admin_search"
+	StateBroadcast      StateKind = "broadcast"
+	StateSticker        StateKind = "sticker"
 )
 
 type State struct {
 	Kind     StateKind
 	TargetID int64
+	Event    string
 }
 
 type StateStore struct {
@@ -276,6 +283,28 @@ func (db *DB) ApprovedTelegramIDs() ([]int64, error) {
 	return ids, err
 }
 
+func (db *DB) GetSetting(key string) (string, error) {
+	var value *string
+	err := db.rpc("get_setting", map[string]any{"key": key}, &value)
+	if value == nil {
+		return "", err
+	}
+	return *value, err
+}
+
+func (db *DB) SetSetting(key, value string) error {
+	return db.rpc("set_setting", map[string]any{"key": key, "value": value}, nil)
+}
+
+func (db *DB) ListSettings(prefix string) (map[string]string, error) {
+	var settings map[string]string
+	err := db.rpc("list_settings", map[string]any{"prefix": prefix}, &settings)
+	if settings == nil {
+		settings = map[string]string{}
+	}
+	return settings, err
+}
+
 func (db *DB) CreatePayment(transactionID string, telegramID int64, provider string, amount int, currency, status string, paymentURL *string, payload *string) error {
 	return db.rpc("create_payment", map[string]any{
 		"transaction_id": transactionID,
@@ -331,6 +360,7 @@ type Message struct {
 	Voice             *TGFileInfo        `json:"voice"`
 	VideoNote         *TGFileInfo        `json:"video_note"`
 	Animation         *TGFileInfo        `json:"animation"`
+	Sticker           *TGSticker         `json:"sticker"`
 	SuccessfulPayment *SuccessfulPayment `json:"successful_payment"`
 }
 
@@ -356,6 +386,11 @@ type TGPhoto struct {
 	FileSize int64  `json:"file_size"`
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
+}
+
+type TGSticker struct {
+	FileID string `json:"file_id"`
+	Emoji  string `json:"emoji"`
 }
 
 type CallbackQuery struct {
@@ -448,6 +483,13 @@ func (tg *Telegram) SendMessage(chatID int64, text string, markup *InlineKeyboar
 	var msg Message
 	err := tg.call("sendMessage", payload, &msg)
 	return &msg, err
+}
+
+func (tg *Telegram) SendSticker(chatID int64, stickerID string) error {
+	if strings.TrimSpace(stickerID) == "" {
+		return nil
+	}
+	return tg.call("sendSticker", map[string]any{"chat_id": chatID, "sticker": stickerID}, nil)
 }
 
 func (tg *Telegram) EditMessageText(chatID int64, messageID int, text string, markup *InlineKeyboardMarkup) error {
@@ -1041,6 +1083,14 @@ func (a *App) handleCommand(msg *Message) {
 			text := strings.TrimSpace(strings.TrimPrefix(msg.Text, parts[0]))
 			a.broadcastText(msg.Chat.ID, text)
 		}
+	case "setsticker":
+		if a.isAdmin(msg.From.ID) {
+			a.setStickerStart(msg, parts)
+		}
+	case "stickers":
+		if a.isAdmin(msg.From.ID) {
+			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), adminKeyboard())
+		}
 	}
 }
 
@@ -1063,6 +1113,7 @@ func (a *App) start(msg *Message) {
 				return
 			}
 		}
+		_ = a.sendEventSticker(msg.Chat.ID, "welcome")
 		_, _ = a.tg.SendMessage(msg.Chat.ID, a.accountText(user), accountKeyboard(a.cfg, langOf(user)))
 		return
 	}
@@ -1098,6 +1149,8 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 	case data == "admin:search":
 		a.states.Set(cb.From.ID, State{Kind: StateAdminSearch})
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", backAdminKeyboard())
+	case data == "stickers":
+		a.edit(cb, a.stickersText(), adminKeyboard())
 	case strings.HasPrefix(data, "users:"):
 		a.usersList(cb)
 	case strings.HasPrefix(data, "user:"):
@@ -1156,8 +1209,11 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.edit(cb, fmt.Sprintf("🔄 <b>Синхронизация завершена</b>\n\nПроверено: <b>%d</b>\nУдалено из БД бота: <b>%d</b>", checked, removed), adminKeyboard())
 	case strings.HasPrefix(data, "backup"):
 		a.backupCallback(cb)
+	case strings.HasPrefix(data, "restore:"):
+		a.restoreBackupCallback(cb)
 	case data == "broadcast":
-		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "📣 Отправьте рассылку командой:\n<code>/broadcast ваш текст</code>", adminKeyboard())
+		a.states.Set(cb.From.ID, State{Kind: StateBroadcast})
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "📣 Отправьте любое сообщение для рассылки: текст, фото, документ, видео или другой тип сообщения.", backAdminKeyboard())
 	default:
 		a.tg.AnswerCallback(cb.ID, "Неизвестное действие", true)
 		return
@@ -1170,6 +1226,11 @@ func (a *App) handleStateMessage(msg *Message, st State) {
 	case StateAdminSearch:
 		a.states.Clear(msg.From.ID)
 		a.renderSearch(msg.Chat.ID, msg.Text)
+	case StateBroadcast:
+		a.states.Clear(msg.From.ID)
+		a.broadcastMessage(msg)
+	case StateSticker:
+		a.saveSticker(msg, st)
 	case StateQuotaCustom:
 		amount, err := strconv.Atoi(strings.TrimSpace(msg.Text))
 		if err != nil || amount <= 0 {
@@ -1217,6 +1278,62 @@ func (a *App) renderSearch(chatID int64, query string) {
 		text += "Выберите пользователя."
 	}
 	_, _ = a.tg.SendMessage(chatID, text, usersKeyboard(users, "all", 0, false))
+}
+
+func (a *App) setStickerStart(msg *Message, parts []string) {
+	allowed := map[string]bool{
+		"welcome": true, "approved": true, "upload_ok": true, "error": true,
+		"support": true, "donate": true, "language": true, "password": true,
+	}
+	if len(parts) != 2 || !allowed[parts[1]] {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|language|password</code>", adminKeyboard())
+		return
+	}
+	a.states.Set(msg.From.ID, State{Kind: StateSticker, Event: parts[1]})
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "Отправьте стикер для события <code>"+esc(parts[1])+"</code>.", backAdminKeyboard())
+}
+
+func (a *App) saveSticker(msg *Message, st State) {
+	if msg.Sticker == nil || msg.Sticker.FileID == "" {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Нужно отправить именно стикер.", backAdminKeyboard())
+		return
+	}
+	if err := a.db.SetSetting("sticker_"+st.Event, msg.Sticker.FileID); err != nil {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось сохранить стикер: <code>"+esc(err.Error())+"</code>", adminKeyboard())
+		return
+	}
+	a.states.Clear(msg.From.ID)
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "✨ Стикер для <code>"+esc(st.Event)+"</code> сохранен. Если Telegram его отклонит, бот оставит базовый маркер "+eventMark(st.Event)+".", adminKeyboard())
+}
+
+func (a *App) stickersText() string {
+	settings, _ := a.db.ListSettings("sticker_")
+	line := func(event string, envValue string) string {
+		mode := "базовый"
+		if settings["sticker_"+event] != "" || envValue != "" {
+			mode = "кастомный"
+		}
+		return event + ": <b>" + mode + "</b> " + eventMark(event)
+	}
+	return "<b>✨ Стикеры</b>\n\n" +
+		"Если кастомный стикер не задан или Telegram его отклонит, бот оставит базовый маркер в тексте.\n\n" +
+		line("welcome", a.cfg.StickerWelcome) + "\n" +
+		line("approved", a.cfg.StickerApproved) + "\n" +
+		line("upload_ok", a.cfg.StickerUploadOK) + "\n" +
+		line("error", a.cfg.StickerError) + "\n" +
+		line("support", "") + "\n" +
+		line("donate", "") + "\n" +
+		line("language", "") + "\n" +
+		line("password", "") + "\n\n" +
+		"Команды настройки:\n" +
+		"<code>/setsticker welcome</code>\n" +
+		"<code>/setsticker approved</code>\n" +
+		"<code>/setsticker upload_ok</code>\n" +
+		"<code>/setsticker error</code>\n" +
+		"<code>/setsticker support</code>\n" +
+		"<code>/setsticker donate</code>\n" +
+		"<code>/setsticker language</code>\n" +
+		"<code>/setsticker password</code>"
 }
 
 func (a *App) usersList(cb *CallbackQuery) {
@@ -1312,6 +1429,7 @@ func (a *App) approveUser(cb *CallbackQuery) {
 		return
 	}
 	approved, _ := a.db.GetUser(id)
+	_ = a.sendEventSticker(id, "approved")
 	_, _ = a.tg.SendMessage(id,
 		"✅ <b>Ваша заявка одобрена</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"+
 			"🆔 Логин: <code>"+esc(ncUserID)+"</code>\n"+
@@ -1472,6 +1590,7 @@ func (a *App) accountSupport(cb *CallbackQuery) {
 	if len(lines) == 2 {
 		lines = append(lines, "Контакты поддержки пока не настроены.")
 	}
+	_ = a.sendEventSticker(cb.Message.Chat.ID, "support")
 	a.edit(cb, strings.Join(lines, "\n"), accountBackKeyboard())
 }
 
@@ -1481,6 +1600,7 @@ func (a *App) accountDonate(cb *CallbackQuery) {
 		return
 	}
 	text := "<b>💙 Поддержать проект</b>\n\nМожно поддержать проект через Telegram Stars или внешнюю ссылку.\nВыберите способ поддержки."
+	_ = a.sendEventSticker(cb.Message.Chat.ID, "donate")
 	a.edit(cb, text, donateKeyboard(a.cfg))
 }
 
@@ -1621,6 +1741,7 @@ func (a *App) applyUserPassword(msg *Message) {
 	}
 	_ = a.db.SetNextcloudPassword(user.TelegramID, password)
 	a.states.Clear(msg.From.ID)
+	_ = a.sendEventSticker(msg.Chat.ID, "password")
 	_, _ = a.tg.SendMessage(msg.Chat.ID, "✅ Пароль сменен.\n\nЛогин: <code>"+esc(*user.NCUserID)+"</code>\nПароль: <code>"+esc(password)+"</code>", accountKeyboard(a.cfg, langOf(user)))
 }
 
@@ -1682,6 +1803,7 @@ func (a *App) handleUpload(msg *Message) {
 	}
 	limit := int64(a.cfg.TelegramMaxDownloadMB) * 1024 * 1024
 	if size > 0 && size > limit {
+		_ = a.sendEventSticker(msg.Chat.ID, "error")
 		_, _ = a.tg.SendMessage(msg.Chat.ID, fmt.Sprintf("⚠️ Telegram не дает боту скачать этот файл: он больше <b>%d MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака.", a.cfg.TelegramMaxDownloadMB), nil)
 		return
 	}
@@ -1729,6 +1851,7 @@ func (a *App) processUpload(job UploadJob) {
 	_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, fmt.Sprintf("📤 Загружаю <b>%s</b> (%s) в облако...", esc(job.Filename), formatBytes(job.FileSize)), nil)
 	tmp, err := a.tg.DownloadFile(job.FileID)
 	if err != nil {
+		_ = a.sendEventSticker(job.ChatID, "error")
 		_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, fmt.Sprintf("⚠️ Telegram не дает боту скачать этот файл.\n\nЛимит для загрузки через бота: <b>%d MB</b>.\nЗагрузите большой файл напрямую через облако.", a.cfg.TelegramMaxDownloadMB), nil)
 		log.Printf("telegram download failed: %v", err)
 		return
@@ -1736,10 +1859,12 @@ func (a *App) processUpload(job UploadJob) {
 	defer os.Remove(tmp)
 	remote, err := a.nc.UploadFile(*user.NCUserID, *user.NCPassword, job.Filename, tmp)
 	if err != nil {
+		_ = a.sendEventSticker(job.ChatID, "error")
 		_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, "⚠️ Не удалось загрузить файл в облако: <code>"+esc(err.Error())+"</code>", nil)
 		log.Printf("nextcloud upload failed: telegram_id=%d filename=%s err=%v", job.TelegramID, job.Filename, err)
 		return
 	}
+	_ = a.sendEventSticker(job.ChatID, "upload_ok")
 	_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, "✅ <b>Файл загружен</b>\n\nПуть: <code>"+esc(remote)+"</code>\n\n"+a.storageText(user), nil)
 	log.Printf("upload completed: telegram_id=%d remote=%s size=%d", job.TelegramID, remote, job.FileSize)
 }
@@ -1835,6 +1960,26 @@ func (a *App) broadcastText(chatID int64, text string) {
 	_, _ = a.tg.SendMessage(chatID, fmt.Sprintf("📣 Рассылка завершена.\n\nОтправлено: <b>%d</b>\nОшибок: <b>%d</b>", sent, failed), adminKeyboard())
 }
 
+func (a *App) broadcastMessage(msg *Message) {
+	ids, err := a.db.ApprovedTelegramIDs()
+	if err != nil {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось получить пользователей: <code>"+esc(err.Error())+"</code>", adminKeyboard())
+		return
+	}
+	sent := 0
+	failed := 0
+	for _, id := range ids {
+		if err := a.tg.CopyMessage(id, msg.Chat.ID, msg.MessageID); err != nil {
+			failed++
+			log.Printf("broadcast copy failed: telegram_id=%d err=%v", id, err)
+		} else {
+			sent++
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	_, _ = a.tg.SendMessage(msg.Chat.ID, fmt.Sprintf("📣 Рассылка завершена.\n\nОтправлено: <b>%d</b>\nОшибок: <b>%d</b>", sent, failed), adminKeyboard())
+}
+
 func (a *App) backupCallback(cb *CallbackQuery) {
 	if cb.Data == "backup" {
 		a.edit(cb, "🗄️ <b>Бекапы</b>\n\nВсе бекапы сжимаются в .gz, хранятся на сервере и автоматически чистятся по retention.", backupKeyboard())
@@ -1851,6 +1996,17 @@ func (a *App) backupCallback(cb *CallbackQuery) {
 		_ = a.tg.SendDocument(cb.Message.Chat.ID, path, "Сжатый SQLite-бекап базы бота")
 		return
 	}
+	if cb.Data == "backup:json" {
+		path, err := createJSONBackup(a.cfg, a.db)
+		if err != nil {
+			a.tg.AnswerCallback(cb.ID, "Ошибка бекапа", true)
+			_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать JSON-бекап: <code>"+esc(err.Error())+"</code>", nil)
+			return
+		}
+		_ = pruneBackups(a.cfg)
+		_ = a.tg.SendDocument(cb.Message.Chat.ID, path, "Сжатый JSON-бекап пользователей")
+		return
+	}
 	if cb.Data == "backup:list" {
 		files := listBackups(a.cfg)
 		text := "🗄️ <b>Последние SQLite-бекапы</b>\n\n"
@@ -1864,6 +2020,41 @@ func (a *App) backupCallback(cb *CallbackQuery) {
 		a.edit(cb, text, backupKeyboard())
 		return
 	}
+	if cb.Data == "backup:restore" {
+		files := listBackups(a.cfg)
+		if len(files) == 0 {
+			a.edit(cb, "Нет SQLite-бекапов для восстановления.", backupKeyboard())
+			return
+		}
+		a.edit(cb, "♻️ <b>Восстановление бекапа</b>\n\nВыберите SQLite-бекап. Перед восстановлением будет создан свежий safety-бекап.", restoreBackupKeyboard(files))
+		return
+	}
+}
+
+func (a *App) restoreBackupCallback(cb *CallbackQuery) {
+	indexRaw := strings.TrimPrefix(cb.Data, "restore:")
+	index, err := strconv.Atoi(indexRaw)
+	files := listBackups(a.cfg)
+	if err != nil || index < 0 || index >= len(files) {
+		a.tg.AnswerCallback(cb.ID, "Бекап не найден", true)
+		return
+	}
+	safety, safetyErr := createSQLiteBackup(a.cfg)
+	if safetyErr != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось создать safety-бекап", true)
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать safety-бекап: <code>"+esc(safetyErr.Error())+"</code>", nil)
+		return
+	}
+	if err := restoreSQLiteBackup(files[index], a.cfg.DatabasePath); err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось восстановить", true)
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось восстановить базу: <code>"+esc(err.Error())+"</code>", nil)
+		return
+	}
+	a.edit(
+		cb,
+		"♻️ База восстановлена из <code>"+esc(filepath.Base(files[index]))+"</code>.\n\nSafety-бекап: <code>"+esc(filepath.Base(safety))+"</code>\nПерезапустите контейнеры, чтобы Go DB service перечитал файл.",
+		adminKeyboard(),
+	)
 }
 
 func (a *App) autoBackupLoop() {
@@ -1925,6 +2116,7 @@ func adminKeyboard() *InlineKeyboardMarkup {
 		{{Text: "👥 Пользователи", CallbackData: "users:all:0"}, {Text: "🔎 Поиск", CallbackData: "admin:search"}},
 		{{Text: "📝 Заявки", CallbackData: "users:requested:0"}, {Text: "🗄️ Бекапы", CallbackData: "backup"}},
 		{{Text: "📣 Рассылка", CallbackData: "broadcast"}, {Text: "🔄 Синхронизация", CallbackData: "sync"}},
+		{{Text: "✨ Стикеры", CallbackData: "stickers"}},
 	})
 }
 
@@ -2102,9 +2294,23 @@ func deleteConfirmKeyboard(id int64) *InlineKeyboardMarkup {
 
 func backupKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
-		{{Text: "🗄️ Создать SQLite", CallbackData: "backup:db"}, {Text: "📋 Список", CallbackData: "backup:list"}},
+		{{Text: "🗄️ Создать SQLite", CallbackData: "backup:db"}, {Text: "📦 Создать JSON", CallbackData: "backup:json"}},
+		{{Text: "📋 Список", CallbackData: "backup:list"}, {Text: "♻️ Восстановить", CallbackData: "backup:restore"}},
 		{{Text: "🛠️ В админку", CallbackData: "admin"}},
 	})
+}
+
+func restoreBackupKeyboard(files []string) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{}
+	for index, file := range files {
+		label := filepath.Base(file)
+		if len([]rune(label)) > 60 {
+			label = string([]rune(label)[:60])
+		}
+		rows = append(rows, []InlineKeyboardButton{{Text: label, CallbackData: fmt.Sprintf("restore:%d", index)}})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Отмена", CallbackData: "backup"}})
+	return keyboard(rows)
 }
 
 func keyboard(rows [][]InlineKeyboardButton) *InlineKeyboardMarkup {
@@ -2150,6 +2356,10 @@ func loadConfig() Config {
 		BackupRetentionDays:          envInt("BACKUP_RETENTION_DAYS", 7),
 		AutoBackupIntervalHours:      envInt("AUTO_BACKUP_INTERVAL_HOURS", 24),
 		NextcloudSyncIntervalMinutes: envInt("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),
+		StickerWelcome:               env("STICKER_WELCOME", ""),
+		StickerApproved:              env("STICKER_APPROVED", ""),
+		StickerUploadOK:              env("STICKER_UPLOAD_OK", ""),
+		StickerError:                 env("STICKER_ERROR", ""),
 	}
 }
 
@@ -2411,6 +2621,65 @@ func mapBool(condition bool, yes, no string) string {
 	return no
 }
 
+func eventMark(event string) string {
+	switch event {
+	case "welcome":
+		return "☁️"
+	case "approved":
+		return "✅"
+	case "upload_ok":
+		return "📦"
+	case "error":
+		return "⚠️"
+	case "support":
+		return "💬"
+	case "donate":
+		return "💙"
+	case "language":
+		return "🌐"
+	case "password":
+		return "🔐"
+	case "premium":
+		return "⭐"
+	case "backup":
+		return "🗄️"
+	case "sync":
+		return "🔄"
+	default:
+		return "✨"
+	}
+}
+
+func (a *App) stickerFromConfig(event string) string {
+	switch event {
+	case "welcome":
+		return a.cfg.StickerWelcome
+	case "approved":
+		return a.cfg.StickerApproved
+	case "upload_ok":
+		return a.cfg.StickerUploadOK
+	case "error":
+		return a.cfg.StickerError
+	default:
+		return ""
+	}
+}
+
+func (a *App) sendEventSticker(chatID int64, event string) error {
+	stickerID, _ := a.db.GetSetting("sticker_" + event)
+	if stickerID == "" {
+		stickerID = a.stickerFromConfig(event)
+	}
+	if stickerID == "" {
+		return nil
+	}
+	if err := a.tg.SendSticker(chatID, stickerID); err != nil {
+		log.Printf("failed to send sticker: chat_id=%d event=%s err=%v", chatID, event, err)
+		return err
+	}
+	return nil
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -2448,6 +2717,71 @@ func createSQLiteBackup(cfg Config) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func createJSONBackup(cfg Config, db *DB) (string, error) {
+	users, err := db.ListUsers("", 100000, 0)
+	if err != nil {
+		return "", err
+	}
+	for i := range users {
+		users[i].NCPassword = nil
+	}
+	if err := os.MkdirAll(cfg.BackupDir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(cfg.BackupDir, "users-"+time.Now().UTC().Format("20060102-150405")+".json.gz")
+	out, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	gz := gzip.NewWriter(out)
+	payload := map[string]any{"generated_at": time.Now().UTC().Format(time.RFC3339), "users": users}
+	encoder := json.NewEncoder(gz)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(payload); err != nil {
+		_ = gz.Close()
+		return "", err
+	}
+	if err := gz.Close(); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func restoreSQLiteBackup(backupPath, targetPath string) error {
+	if _, err := os.Stat(backupPath); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(backupPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	gz, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tmp := targetPath + ".restore-tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, gz); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, targetPath)
 }
 
 func listBackups(cfg Config) []string {
