@@ -1,9 +1,26 @@
 services:
-  telegram-nextcloud-bot:
-    build: .
+  bot-db:
+    build:
+      context: .
+      dockerfile: dbservice/Dockerfile
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DB_LISTEN_ADDR: ":8080"
+      DATABASE_PATH: /app/data/bot.sqlite3
+    volumes:
+      - ./data:/app/data
+
+  telegram-nextcloud-bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - bot-db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: http://bot-db:8080
     volumes:
       - ./data:/app/data
       - ./backups:/app/backups

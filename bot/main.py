@@ -1798,7 +1798,13 @@ async def main() -> None:
     configure_logging(config)
     logging.info("Bot starting. public_nextcloud=%s internal_nextcloud=%s", config.nextcloud_url, config.nextcloud_internal_url)
 
-    db = Database(config.database_path, secret_key=config.database_secret_key, premium_days=config.premium_days)
+    db = Database(
+        config.database_path,
+        service_url=config.database_url,
+        api_token=config.database_api_token,
+        secret_key=config.database_secret_key,
+        premium_days=config.premium_days,
+    )
     await db.init()
 
     nc = NextcloudClient(
@@ -1839,6 +1845,7 @@ async def main() -> None:
         await nc.close()
         if platega:
             await platega.close()
+        await db.close()
         await bot.session.close()
 
 

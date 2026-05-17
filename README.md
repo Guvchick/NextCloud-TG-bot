@@ -54,6 +54,8 @@ DEFAULT_QUOTA_GB=10
 
 # Local storage
 DATABASE_PATH=data/bot.sqlite3
+DATABASE_URL=http://bot-db:8080
+DATABASE_API_TOKEN=
 DATABASE_SECRET_KEY=
 BACKUP_DIR=backups
 LOG_DIR=logs
@@ -116,7 +118,7 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 
 Файлы из Telegram загружаются в корень диска пользователя. `UPLOAD_FOLDER` оставлен как legacy-настройка, но пользовательский сценарий ее не показывает.
 
-`DATABASE_SECRET_KEY` включает шифрование сохраненных Nextcloud-паролей в SQLite. Укажите длинную случайную строку и не меняйте ее после запуска: старые зашифрованные пароли без нее не расшифровать. Файл БД дополнительно создается с правами `0600`, папка данных - `0700`; SQLite работает с `foreign_keys`, `WAL`, `busy_timeout` и `secure_delete`.
+База данных обслуживается отдельным Go-сервисом `bot-db`; Python-бот ходит к нему по `DATABASE_URL`. `DATABASE_API_TOKEN` включает bearer-токен между ботом и Go-БД. `DATABASE_SECRET_KEY` включает шифрование сохраненных Nextcloud-паролей внутри SQLite. Укажите длинную случайную строку и не меняйте ее после запуска: старые зашифрованные пароли без нее не расшифровать. Файл БД дополнительно создается с правами `0600`, папка данных - `0700`; SQLite работает с `foreign_keys`, `WAL`, `busy_timeout` и `secure_delete`.
 
 `ENABLE_SUPPORT_BLOCK=false` полностью убирает кнопку поддержки. `SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю в разделе поддержки.
 

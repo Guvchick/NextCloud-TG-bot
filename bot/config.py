@@ -17,6 +17,8 @@ class Config:
     nextcloud_admin_password: str
     default_quota_gb: int
     database_path: Path
+    database_url: str
+    database_api_token: str | None
     database_secret_key: str | None
     backup_dir: Path
     log_dir: Path
@@ -119,6 +121,8 @@ def load_config() -> Config:
         nextcloud_admin_password=_required("NEXTCLOUD_ADMIN_PASSWORD"),
         default_quota_gb=default_quota_gb,
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
+        database_url=os.getenv("DATABASE_URL", "http://bot-db:8080").strip().rstrip("/"),
+        database_api_token=_optional("DATABASE_API_TOKEN"),
         database_secret_key=_optional("DATABASE_SECRET_KEY"),
         backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
         log_dir=Path(os.getenv("LOG_DIR", "logs")),
