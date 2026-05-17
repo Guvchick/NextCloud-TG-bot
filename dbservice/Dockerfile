@@ -2,8 +2,8 @@ FROM golang:1.22-bookworm AS build
 
 WORKDIR /src
 COPY dbservice/go.mod ./
-RUN go mod download
 COPY dbservice/ ./
+RUN go mod tidy && go mod download
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bot-db .
 
 FROM debian:bookworm-slim
