@@ -23,6 +23,9 @@ class Config:
     support_telegram: str | None
     support_email: str | None
     donate_url: str | None
+    boosty_access_token: str | None
+    boosty_subscribers_url: str
+    boosty_sync_interval_minutes: int
     backup_retention_days: int
     auto_backup_interval_hours: int
     nextcloud_sync_interval_minutes: int
@@ -88,6 +91,12 @@ def load_config() -> Config:
         support_telegram=_optional("SUPPORT_TELEGRAM"),
         support_email=_optional("SUPPORT_EMAIL"),
         donate_url=_optional("DONATE_URL"),
+        boosty_access_token=_optional("BOOSTY_ACCESS_TOKEN"),
+        boosty_subscribers_url=os.getenv(
+            "BOOSTY_SUBSCRIBERS_URL",
+            "https://api.boosty.to/v1/blog/getapp/subscribers",
+        ).strip(),
+        boosty_sync_interval_minutes=_int_env("BOOSTY_SYNC_INTERVAL_MINUTES", 60),
         backup_retention_days=_int_env("BACKUP_RETENTION_DAYS", 7),
         auto_backup_interval_hours=_int_env("AUTO_BACKUP_INTERVAL_HOURS", 24),
         nextcloud_sync_interval_minutes=_int_env("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),

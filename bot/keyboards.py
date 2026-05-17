@@ -10,6 +10,7 @@ def _labels(lang: str) -> dict[str, str]:
             "change_password": "🔐 Change password",
             "support": "💬 Support",
             "donate": "💙 Donate",
+            "boosty": "💙 Boosty",
             "language": "🌐 Language",
             "back": "⬅️ Back",
             "ru": "Русский",
@@ -19,6 +20,7 @@ def _labels(lang: str) -> dict[str, str]:
         "change_password": "🔐 Сменить пароль",
         "support": "💬 Поддержка",
         "donate": "💙 Донат",
+        "boosty": "💙 Boosty",
         "language": "🌐 Язык",
         "back": "⬅️ Назад",
         "ru": "Русский",
@@ -32,6 +34,7 @@ def account_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     builder.button(text=labels["change_password"], callback_data="account:change_password")
     builder.button(text=labels["support"], callback_data="account:support")
     builder.button(text=labels["donate"], callback_data="account:donate")
+    builder.button(text=labels["boosty"], callback_data="account:boosty")
     builder.button(text=labels["language"], callback_data="account:language")
     builder.adjust(1)
     return builder.as_markup()
@@ -70,8 +73,9 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🗄️ Бекапы", callback_data="backup")
     builder.button(text="📣 Рассылка", callback_data="broadcast")
     builder.button(text="🔄 Синхронизация", callback_data="sync")
+    builder.button(text="💙 Boosty", callback_data="boosty:sync")
     builder.button(text="✨ Стикеры", callback_data="stickers")
-    builder.adjust(2, 2, 2)
+    builder.adjust(2, 2, 2, 1)
     return builder.as_markup()
 
 

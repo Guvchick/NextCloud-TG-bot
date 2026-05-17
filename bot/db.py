@@ -32,6 +32,7 @@ class Database:
                     nc_password TEXT,
                     quota_gb INTEGER NOT NULL DEFAULT 0,
                     is_supporter INTEGER NOT NULL DEFAULT 0,
+                    boosty_email TEXT,
                     is_disabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -51,6 +52,7 @@ class Database:
             await self._ensure_column(db, "users", "nc_password", "TEXT")
             await self._ensure_column(db, "users", "language", "TEXT NOT NULL DEFAULT 'ru'")
             await self._ensure_column(db, "users", "is_supporter", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "users", "boosty_email", "TEXT")
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
@@ -172,6 +174,16 @@ class Database:
             await db.execute(
                 "UPDATE users SET is_supporter = ?, updated_at = ? WHERE telegram_id = ?",
                 (1 if is_supporter else 0, now, telegram_id),
+            )
+            await db.commit()
+
+    async def set_boosty_email(self, telegram_id: int, boosty_email: str | None) -> None:
+        now = utc_now()
+        normalized = boosty_email.strip().lower() if boosty_email else None
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET boosty_email = ?, updated_at = ? WHERE telegram_id = ?",
+                (normalized or None, now, telegram_id),
             )
             await db.commit()
 

@@ -27,6 +27,7 @@ from bot.backups import (
     prune_old_backups,
     restore_sqlite_backup,
 )
+from bot.boosty import BoostyClient
 from bot.config import Config, load_config
 from bot.db import Database
 from bot.keyboards import (
@@ -61,6 +62,10 @@ class UserPasswordState(StatesGroup):
     waiting_password = State()
 
 
+class BoostyEmailState(StatesGroup):
+    waiting_email = State()
+
+
 class StickerState(StatesGroup):
     waiting_sticker = State()
 
@@ -86,6 +91,10 @@ def valid_password(password: str) -> bool:
     return len(password) >= 8 and len(password) <= 128 and not password.isspace()
 
 
+def valid_email(email: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()))
+
+
 TEXT = {
     "ru": {
         "account_title": "Ваше облако",
@@ -100,6 +109,16 @@ TEXT = {
         "donate_title": "Донат",
         "donate_empty": "Ссылка на донат пока не настроена.",
         "donate_text": "Поддержать проект можно по ссылке ниже.",
+        "boosty_title": "Boosty",
+        "boosty_prompt": "Отправьте email, который указан у вас на Boosty. Я буду автоматически проверять активную поддержку и выдавать иконку.",
+        "boosty_current": "Привязанный email",
+        "boosty_empty": "email еще не привязан",
+        "boosty_active": "Иконка поддержавшего активна",
+        "boosty_waiting": "Иконка появится автоматически после следующей проверки активной поддержки.",
+        "boosty_not_configured": "Автосверка Boosty пока не настроена администратором, но email можно сохранить заранее.",
+        "boosty_saved": "Boosty email сохранен.",
+        "boosty_email_invalid": "Отправьте корректный email.",
+        "supporter_badge": "Поддержавший Boosty",
         "language_title": "Выберите язык",
         "language_saved": "Язык сохранен.",
         "change_password_prompt": "Отправьте новый пароль для облака.\n\nМинимум 8 символов. После смены бот обновит сохраненный пароль для загрузок.",
@@ -143,6 +162,16 @@ TEXT = {
         "donate_title": "Donate",
         "donate_empty": "Donation link is not configured yet.",
         "donate_text": "You can support the project using the link below.",
+        "boosty_title": "Boosty",
+        "boosty_prompt": "Send the email you use on Boosty. I will automatically check active support and grant the supporter icon.",
+        "boosty_current": "Linked email",
+        "boosty_empty": "no email linked yet",
+        "boosty_active": "Supporter icon is active",
+        "boosty_waiting": "The icon will appear automatically after the next active-support check.",
+        "boosty_not_configured": "Boosty auto-sync is not configured by the admin yet, but you can save the email now.",
+        "boosty_saved": "Boosty email saved.",
+        "boosty_email_invalid": "Send a valid email.",
+        "supporter_badge": "Boosty supporter",
         "language_title": "Choose language",
         "language_saved": "Language saved.",
         "change_password_prompt": "Send a new cloud password.\n\nMinimum 8 characters. The bot will update the saved password for uploads.",
@@ -195,6 +224,7 @@ def event_mark(event: str) -> str:
         "backup": "🗄️",
         "support": "💬",
         "donate": "💙",
+        "boosty": "💙",
         "language": "🌐",
         "password": "🔐",
     }.get(event, "•")
@@ -264,6 +294,23 @@ def donate_text(config: Config, lang: str = "ru") -> str:
     )
 
 
+def boosty_text(user: dict, config: Config, lang: str = "ru") -> str:
+    email = user.get("boosty_email")
+    current = f"<code>{html.escape(email)}</code>" if email else f"<b>{tr(lang, 'boosty_empty')}</b>"
+    status = tr(lang, "boosty_active") if user.get("is_supporter") else tr(lang, "boosty_waiting")
+    lines = [
+        f"{event_mark('boosty')} <b>{tr(lang, 'boosty_title')}</b>",
+        "",
+        f"📬 {tr(lang, 'boosty_current')}: {current}",
+        f"💙 {status}",
+        "",
+        tr(lang, "boosty_prompt"),
+    ]
+    if not config.boosty_access_token:
+        lines.extend(["", f"⚠️ {tr(lang, 'boosty_not_configured')}"])
+    return "\n".join(lines)
+
+
 def format_bytes(value: int | None) -> str:
     if value is None:
         return "неизвестно"
@@ -321,7 +368,7 @@ async def storage_text(user: dict, nc: NextcloudClient, lang: str = "ru") -> str
 
 async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
     lang = lang_of(user)
-    supporter_line = "💙 <b>Поддержавший Boosty</b>\n" if user.get("is_supporter") else ""
+    supporter_line = f"💙 <b>{tr(lang, 'supporter_badge')}</b>\n" if user.get("is_supporter") else ""
     password = user.get("nc_password")
     password_line = (
         f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
@@ -426,6 +473,47 @@ async def sync_nextcloud_users(db: Database, nc: NextcloudClient) -> tuple[int, 
     return checked, removed
 
 
+async def sync_boosty_supporters(db: Database, boosty: BoostyClient) -> tuple[int, int, int, int]:
+    active_emails = await boosty.fetch_active_emails()
+    checked = 0
+    activated = 0
+    deactivated = 0
+    skipped = 0
+    for user in await db.approved_users():
+        email = str(user.get("boosty_email") or "").strip().lower()
+        if not email:
+            skipped += 1
+            continue
+
+        checked += 1
+        should_be_supporter = email in active_emails
+        is_supporter = bool(user.get("is_supporter"))
+        if should_be_supporter == is_supporter:
+            continue
+
+        await db.set_supporter(int(user["telegram_id"]), should_be_supporter)
+        if should_be_supporter:
+            activated += 1
+        else:
+            deactivated += 1
+        logging.info(
+            "Boosty supporter auto-sync changed user: telegram_id=%s email=%s is_supporter=%s",
+            user["telegram_id"],
+            email,
+            should_be_supporter,
+        )
+
+    logging.info(
+        "Boosty sync completed: active_emails=%s checked=%s skipped=%s activated=%s deactivated=%s",
+        len(active_emails),
+        checked,
+        skipped,
+        activated,
+        deactivated,
+    )
+    return checked, activated, deactivated, len(active_emails)
+
+
 @router.message(CommandStart())
 async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user:
@@ -513,6 +601,28 @@ async def sync_command(message: Message, db: Database, nc: NextcloudClient, conf
     await message.answer(f"{event_mark('sync')} Синхронизация завершена.\nПроверено: <b>{checked}</b>\nУдалено из БД бота: <b>{removed}</b>")
 
 
+@router.message(Command("boosty_sync"))
+async def boosty_sync_command(message: Message, db: Database, boosty: BoostyClient | None, config: Config) -> None:
+    if not message.from_user or not is_admin(message.from_user.id, config):
+        return
+    if not boosty:
+        await message.answer("Boosty-синхронизация не настроена. Заполните <code>BOOSTY_ACCESS_TOKEN</code>.")
+        return
+    try:
+        checked, activated, deactivated, active = await sync_boosty_supporters(db, boosty)
+    except Exception as exc:
+        logging.exception("Manual Boosty sync failed")
+        await message.answer(f"{event_mark('error')} Boosty-синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
+        return
+    await message.answer(
+        f"{event_mark('boosty')} <b>Boosty-синхронизация завершена</b>\n\n"
+        f"Активных email у Boosty: <b>{active}</b>\n"
+        f"Проверено привязок: <b>{checked}</b>\n"
+        f"Выдано иконок: <b>{activated}</b>\n"
+        f"Снято иконок: <b>{deactivated}</b>"
+    )
+
+
 async def stickers_text(db: Database, config: Config) -> str:
     settings = await db.list_settings("sticker_")
     return (
@@ -524,6 +634,7 @@ async def stickers_text(db: Database, config: Config) -> str:
         f"error: <b>{'кастомный' if settings.get('sticker_error') or config.sticker_error else 'базовый'}</b> {event_mark('error')}\n"
         f"support: <b>{'кастомный' if settings.get('sticker_support') else 'базовый'}</b> {event_mark('support')}\n"
         f"donate: <b>{'кастомный' if settings.get('sticker_donate') else 'базовый'}</b> {event_mark('donate')}\n"
+        f"boosty: <b>{'кастомный' if settings.get('sticker_boosty') else 'базовый'}</b> {event_mark('boosty')}\n"
         f"language: <b>{'кастомный' if settings.get('sticker_language') else 'базовый'}</b> {event_mark('language')}\n"
         f"password: <b>{'кастомный' if settings.get('sticker_password') else 'базовый'}</b> {event_mark('password')}\n\n"
         "Команды настройки:\n"
@@ -533,6 +644,7 @@ async def stickers_text(db: Database, config: Config) -> str:
         "<code>/setsticker error</code>\n"
         "<code>/setsticker support</code>\n"
         "<code>/setsticker donate</code>\n"
+        "<code>/setsticker boosty</code>\n"
         "<code>/setsticker language</code>\n"
         "<code>/setsticker password</code>\n\n"
         "После команды отправьте нужный стикер."
@@ -560,9 +672,9 @@ async def set_sticker_command(message: Message, state: FSMContext, config: Confi
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
     parts = (message.text or "").split(maxsplit=1)
-    allowed = {"welcome", "approved", "upload_ok", "error", "support", "donate", "language", "password"}
+    allowed = {"welcome", "approved", "upload_ok", "error", "support", "donate", "boosty", "language", "password"}
     if len(parts) != 2 or parts[1].strip() not in allowed:
-        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|language|password</code>")
+        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|boosty|language|password</code>")
         return
     event = parts[1].strip()
     await state.set_state(StickerState.waiting_sticker)
@@ -597,6 +709,58 @@ async def account_donate(callback: CallbackQuery, bot: Bot, db: Database, config
     await send_event_sticker(bot, db, config, callback.message.chat.id, "donate")
     await safe_edit_text(callback.message, donate_text(config, lang), reply_markup=account_back_keyboard(lang))
     await callback.answer()
+
+
+@router.callback_query(F.data == "account:boosty")
+async def account_boosty(callback: CallbackQuery, state: FSMContext, bot: Bot, db: Database, config: Config) -> None:
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer(tr(lang, "access_inactive"), show_alert=True)
+        return
+    await state.set_state(BoostyEmailState.waiting_email)
+    await send_event_sticker(bot, db, config, callback.message.chat.id, "boosty")
+    await safe_edit_text(callback.message, boosty_text(user, config, lang), reply_markup=account_back_keyboard(lang))
+    await callback.answer()
+
+
+@router.message(BoostyEmailState.waiting_email)
+async def account_boosty_email_apply(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    nc: NextcloudClient,
+    boosty: BoostyClient | None,
+    config: Config,
+) -> None:
+    if not message.from_user:
+        return
+    user = await db.get_user(message.from_user.id)
+    lang = lang_of(user)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await state.clear()
+        await message.answer(tr(lang, "access_inactive"))
+        return
+
+    email = (message.text or "").strip().lower()
+    if not valid_email(email):
+        await message.answer(tr(lang, "boosty_email_invalid"), reply_markup=account_back_keyboard(lang))
+        return
+
+    await db.set_boosty_email(message.from_user.id, email)
+    if boosty:
+        try:
+            await sync_boosty_supporters(db, boosty)
+        except Exception:
+            logging.exception("Boosty sync after email save failed")
+    user = await db.get_user(message.from_user.id) or user
+    lang = lang_of(user)
+    await state.clear()
+    await message.answer(
+        f"{event_mark('boosty')} {tr(lang, 'boosty_saved')}\n\n"
+        f"{await account_text(user, nc, config)}",
+        reply_markup=account_keyboard(lang),
+    )
 
 
 @router.callback_query(F.data == "account:language")
@@ -657,6 +821,39 @@ async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient,
         f"{event_mark('sync')} <b>Синхронизация завершена</b>\n\n"
         f"Проверено: <b>{checked}</b>\n"
         f"Удалено из БД бота: <b>{removed}</b>",
+        reply_markup=admin_keyboard(),
+    )
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data == "boosty:sync")
+async def boosty_sync_panel(callback: CallbackQuery, db: Database, boosty: BoostyClient | None, config: Config) -> None:
+    if not callback.from_user or not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    if not boosty:
+        await safe_edit_text(
+            callback.message,
+            f"{event_mark('boosty')} <b>Boosty-синхронизация</b>\n\n"
+            "Не настроен <code>BOOSTY_ACCESS_TOKEN</code>.",
+            reply_markup=admin_keyboard(),
+        )
+        await callback.answer("Не настроено", show_alert=True)
+        return
+    try:
+        checked, activated, deactivated, active = await sync_boosty_supporters(db, boosty)
+    except Exception as exc:
+        logging.exception("Manual Boosty sync failed")
+        await callback.message.answer(f"{event_mark('error')} Boosty-синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
+        await callback.answer("Ошибка", show_alert=True)
+        return
+    await safe_edit_text(
+        callback.message,
+        f"{event_mark('boosty')} <b>Boosty-синхронизация завершена</b>\n\n"
+        f"Активных email у Boosty: <b>{active}</b>\n"
+        f"Проверено привязок: <b>{checked}</b>\n"
+        f"Выдано иконок: <b>{activated}</b>\n"
+        f"Снято иконок: <b>{deactivated}</b>",
         reply_markup=admin_keyboard(),
     )
     await callback.answer("Готово")
@@ -906,6 +1103,7 @@ async def render_user_details(
         f"Nextcloud ID: <code>{html.escape(user.get('nc_user_id') or '-')}</code>\n"
         f"Статус: <b>{html.escape(user['status'])}</b>\n"
         f"Boosty: <b>{'💙 поддержавший' if is_supporter else 'нет'}</b>\n"
+        f"Boosty email: <code>{html.escape(user.get('boosty_email') or '-')}</code>\n"
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
         f"{storage}\n"
         f"Доступ: <b>{'отключен' if disabled else 'активен'}</b>"
@@ -1333,6 +1531,15 @@ async def nextcloud_sync_loop(db: Database, nc: NextcloudClient, config: Config)
         await asyncio.sleep(config.nextcloud_sync_interval_minutes * 60)
 
 
+async def boosty_sync_loop(db: Database, boosty: BoostyClient, config: Config) -> None:
+    while True:
+        try:
+            await sync_boosty_supporters(db, boosty)
+        except Exception:
+            logging.exception("Automatic Boosty sync failed")
+        await asyncio.sleep(config.boosty_sync_interval_minutes * 60)
+
+
 async def main() -> None:
     config = load_config()
     configure_logging(config)
@@ -1348,6 +1555,15 @@ async def main() -> None:
             password=config.nextcloud_admin_password,
         )
     )
+    boosty = (
+        BoostyClient(config.boosty_access_token, config.boosty_subscribers_url)
+        if config.boosty_access_token
+        else None
+    )
+    if boosty:
+        logging.info("Boosty auto-sync enabled: interval_minutes=%s", config.boosty_sync_interval_minutes)
+    else:
+        logging.info("Boosty auto-sync disabled: BOOSTY_ACCESS_TOKEN is empty")
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -1358,14 +1574,18 @@ async def main() -> None:
         asyncio.create_task(auto_backup_loop(db, config)),
         asyncio.create_task(nextcloud_sync_loop(db, nc, config)),
     ]
+    if boosty:
+        background_tasks.append(asyncio.create_task(boosty_sync_loop(db, boosty, config)))
 
     try:
-        await dp.start_polling(bot, db=db, config=config, nc=nc)
+        await dp.start_polling(bot, db=db, config=config, nc=nc, boosty=boosty)
     finally:
         for task in background_tasks:
             task.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
         await nc.close()
+        if boosty:
+            await boosty.close()
         await bot.session.close()
 
 
