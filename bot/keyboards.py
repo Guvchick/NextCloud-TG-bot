@@ -95,7 +95,14 @@ def users_keyboard(users: list[dict], status: str, page: int, has_next: bool) ->
     return builder.as_markup()
 
 
-def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: str, is_disabled: bool) -> InlineKeyboardMarkup:
+def user_keyboard(
+    telegram_id: int,
+    back_status: str,
+    back_page: int,
+    status: str,
+    is_disabled: bool,
+    is_supporter: bool,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if status in {"requested", "rejected"}:
         builder.button(text="✅ Одобрить", callback_data=f"approve:{telegram_id}")
@@ -107,6 +114,10 @@ def user_keyboard(telegram_id: int, back_status: str, back_page: int, status: st
         builder.button(text="➕ 10GB", callback_data=f"quotaadd:{telegram_id}:10")
         builder.button(text="⚙️ Другое", callback_data=f"quotacustom:{telegram_id}")
         builder.button(text="🔐 Сбросить пароль", callback_data=f"resetpass:{telegram_id}")
+        if is_supporter:
+            builder.button(text="💙 Убрать Boosty", callback_data=f"supporter:{telegram_id}:0")
+        else:
+            builder.button(text="💙 Поддержал Boosty", callback_data=f"supporter:{telegram_id}:1")
         if is_disabled:
             builder.button(text="🟢 Включить", callback_data=f"enable:{telegram_id}")
         else:

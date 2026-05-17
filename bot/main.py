@@ -321,6 +321,7 @@ async def storage_text(user: dict, nc: NextcloudClient, lang: str = "ru") -> str
 
 async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
     lang = lang_of(user)
+    supporter_line = "💙 <b>Поддержавший Boosty</b>\n" if user.get("is_supporter") else ""
     password = user.get("nc_password")
     password_line = (
         f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
@@ -330,6 +331,7 @@ async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
     return (
         f"{event_mark('welcome')} ✨ <b>{tr(lang, 'account_title')}</b> ✨\n"
         "<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"
+        f"{supporter_line}"
         f"🆔 {tr(lang, 'login')}: <code>{html.escape(user.get('nc_user_id') or str(user['telegram_id']))}</code>\n"
         f"{password_line}"
         f"💾 {tr(lang, 'quota')}: <b>{user['quota_gb']} GB</b>\n"
@@ -895,6 +897,7 @@ async def render_user_details(
         return
 
     disabled = bool(user["is_disabled"])
+    is_supporter = bool(user.get("is_supporter"))
     storage = await storage_text(user, nc) if nc and user["status"] == "approved" else "Занято: <b>нет данных</b>"
     text = (
         "<b>Пользователь</b>\n\n"
@@ -902,6 +905,7 @@ async def render_user_details(
         f"Telegram ID: <code>{telegram_id}</code>\n"
         f"Nextcloud ID: <code>{html.escape(user.get('nc_user_id') or '-')}</code>\n"
         f"Статус: <b>{html.escape(user['status'])}</b>\n"
+        f"Boosty: <b>{'💙 поддержавший' if is_supporter else 'нет'}</b>\n"
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
         f"{storage}\n"
         f"Доступ: <b>{'отключен' if disabled else 'активен'}</b>"
@@ -909,7 +913,7 @@ async def render_user_details(
     await safe_edit_text(
         callback.message,
         text,
-        reply_markup=user_keyboard(telegram_id, back_status, back_page, user["status"], disabled),
+        reply_markup=user_keyboard(telegram_id, back_status, back_page, user["status"], disabled, is_supporter),
     )
 
 
@@ -1029,6 +1033,20 @@ async def reset_password(callback: CallbackQuery, bot: Bot, db: Database, nc: Ne
 
     await callback.message.answer(f"{delivery}\nПользователь: <code>{telegram_id}</code>")
     await callback.answer("Пароль сброшен")
+
+
+@router.callback_query(F.data.startswith("supporter:"))
+async def set_supporter(callback: CallbackQuery, db: Database, nc: NextcloudClient, config: Config) -> None:
+    if not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    _, telegram_id_raw, value_raw = callback.data.split(":")
+    telegram_id = int(telegram_id_raw)
+    is_supporter = value_raw == "1"
+    await db.set_supporter(telegram_id, is_supporter)
+    logging.info("Boosty supporter flag changed: telegram_id=%s is_supporter=%s", telegram_id, is_supporter)
+    await callback.answer("Статус Boosty обновлен")
+    await render_user_details(callback, db, nc, config, telegram_id)
 
 
 @router.callback_query(F.data.startswith("disable:"))

@@ -31,6 +31,7 @@ class Database:
                     nc_user_id TEXT,
                     nc_password TEXT,
                     quota_gb INTEGER NOT NULL DEFAULT 0,
+                    is_supporter INTEGER NOT NULL DEFAULT 0,
                     is_disabled INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -49,6 +50,7 @@ class Database:
             )
             await self._ensure_column(db, "users", "nc_password", "TEXT")
             await self._ensure_column(db, "users", "language", "TEXT NOT NULL DEFAULT 'ru'")
+            await self._ensure_column(db, "users", "is_supporter", "INTEGER NOT NULL DEFAULT 0")
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table: str, column: str, definition: str) -> None:
@@ -161,6 +163,15 @@ class Database:
             await db.execute(
                 "UPDATE users SET is_disabled = ?, updated_at = ? WHERE telegram_id = ?",
                 (1 if is_disabled else 0, now, telegram_id),
+            )
+            await db.commit()
+
+    async def set_supporter(self, telegram_id: int, is_supporter: bool) -> None:
+        now = utc_now()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET is_supporter = ?, updated_at = ? WHERE telegram_id = ?",
+                (1 if is_supporter else 0, now, telegram_id),
             )
             await db.commit()
 
