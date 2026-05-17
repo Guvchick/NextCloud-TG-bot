@@ -10,9 +10,12 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 COPY --from=build /out/bot-db /app/bot-db
-RUN mkdir -p /app/data && chmod 700 /app/data
 
 ENV DB_LISTEN_ADDR=:8080
-ENV DATABASE_PATH=/app/data/bot.sqlite3
+ENV POSTGRES_HOST=postgres
+ENV POSTGRES_PORT=5432
+ENV POSTGRES_DB=bot
+ENV POSTGRES_USER=bot
+ENV POSTGRES_SSLMODE=disable
 
 CMD ["/app/bot-db"]

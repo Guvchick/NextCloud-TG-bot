@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"container/heap"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,7 +38,7 @@ type Config struct {
 	DefaultQuotaGB               int
 	DatabaseURL                  string
 	DatabaseAPIToken             string
-	DatabasePath                 string
+	RedisURL                     string
 	BackupDir                    string
 	LogDir                       string
 	EnableSupportBlock           bool
@@ -123,19 +125,35 @@ type State struct {
 type StateStore struct {
 	mu     sync.Mutex
 	values map[int64]State
+	redis  *RedisClient
 }
 
-func NewStateStore() *StateStore {
-	return &StateStore{values: map[int64]State{}}
+func NewStateStore(redis *RedisClient) *StateStore {
+	return &StateStore{values: map[int64]State{}, redis: redis}
 }
 
 func (s *StateStore) Set(id int64, st State) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.values[id] = st
+	s.mu.Unlock()
+	if s.redis != nil {
+		raw, _ := json.Marshal(st)
+		if err := s.redis.SetEX("state:"+strconv.FormatInt(id, 10), string(raw), 6*time.Hour); err != nil {
+			log.Printf("redis state set failed: %v", err)
+		}
+	}
 }
 
 func (s *StateStore) Get(id int64) (State, bool) {
+	if s.redis != nil {
+		raw, err := s.redis.Get("state:" + strconv.FormatInt(id, 10))
+		if err == nil && raw != "" {
+			var st State
+			if json.Unmarshal([]byte(raw), &st) == nil {
+				return st, true
+			}
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.values[id]
@@ -144,8 +162,144 @@ func (s *StateStore) Get(id int64) (State, bool) {
 
 func (s *StateStore) Clear(id int64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.values, id)
+	s.mu.Unlock()
+	if s.redis != nil {
+		if err := s.redis.Del("state:" + strconv.FormatInt(id, 10)); err != nil {
+			log.Printf("redis state del failed: %v", err)
+		}
+	}
+}
+
+type RedisClient struct {
+	addr     string
+	password string
+	db       string
+}
+
+func NewRedisClient(rawURL string) (*RedisClient, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return nil, nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	addr := parsed.Host
+	if !strings.Contains(addr, ":") {
+		addr += ":6379"
+	}
+	password, _ := parsed.User.Password()
+	db := strings.TrimPrefix(parsed.Path, "/")
+	return &RedisClient{addr: addr, password: password, db: db}, nil
+}
+
+func (r *RedisClient) SetEX(key, value string, ttl time.Duration) error {
+	_, err := r.do("SETEX", key, strconv.Itoa(int(ttl.Seconds())), value)
+	return err
+}
+
+func (r *RedisClient) Get(key string) (string, error) {
+	value, err := r.do("GET", key)
+	if err != nil {
+		return "", err
+	}
+	if value == nil {
+		return "", nil
+	}
+	return fmt.Sprint(value), nil
+}
+
+func (r *RedisClient) Del(key string) error {
+	_, err := r.do("DEL", key)
+	return err
+}
+
+func (r *RedisClient) do(args ...string) (any, error) {
+	conn, err := net.DialTimeout("tcp", r.addr, 3*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	if r.password != "" {
+		if _, err := writeRedisCommand(conn, "AUTH", r.password); err != nil {
+			return nil, err
+		}
+		if _, err := readRedisReply(reader); err != nil {
+			return nil, err
+		}
+	}
+	if r.db != "" && r.db != "0" {
+		if _, err := writeRedisCommand(conn, "SELECT", r.db); err != nil {
+			return nil, err
+		}
+		if _, err := readRedisReply(reader); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := writeRedisCommand(conn, args...); err != nil {
+		return nil, err
+	}
+	return readRedisReply(reader)
+}
+
+func writeRedisCommand(w io.Writer, args ...string) (int, error) {
+	var b strings.Builder
+	b.WriteString("*")
+	b.WriteString(strconv.Itoa(len(args)))
+	b.WriteString("\r\n")
+	for _, arg := range args {
+		b.WriteString("$")
+		b.WriteString(strconv.Itoa(len(arg)))
+		b.WriteString("\r\n")
+		b.WriteString(arg)
+		b.WriteString("\r\n")
+	}
+	return io.WriteString(w, b.String())
+}
+
+func readRedisReply(r *bufio.Reader) (any, error) {
+	prefix, err := r.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	switch prefix {
+	case '+':
+		return line, nil
+	case '-':
+		return nil, errors.New(line)
+	case ':':
+		return strconv.ParseInt(line, 10, 64)
+	case '$':
+		size, _ := strconv.Atoi(line)
+		if size < 0 {
+			return nil, nil
+		}
+		buf := make([]byte, size+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		return string(buf[:size]), nil
+	case '*':
+		count, _ := strconv.Atoi(line)
+		items := make([]any, 0, count)
+		for i := 0; i < count; i++ {
+			item, err := readRedisReply(r)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	default:
+		return nil, fmt.Errorf("unknown redis reply prefix %q", prefix)
+	}
 }
 
 type DB struct {
@@ -281,6 +435,10 @@ func (db *DB) ApprovedTelegramIDs() ([]int64, error) {
 	var ids []int64
 	err := db.rpc("approved_telegram_ids", map[string]any{}, &ids)
 	return ids, err
+}
+
+func (db *DB) RestoreUsers(users []User) error {
+	return db.rpc("restore_users", map[string]any{"users": users}, nil)
 }
 
 func (db *DB) GetSetting(key string) (string, error) {
@@ -947,6 +1105,10 @@ func main() {
 	loadDotEnv(".env")
 	cfg := loadConfig()
 	configureLogging(cfg)
+	redis, err := NewRedisClient(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("redis config: %v", err)
+	}
 
 	app := &App{
 		cfg: cfg,
@@ -967,7 +1129,7 @@ func main() {
 			password: cfg.NextcloudAdminPassword,
 			client:   &http.Client{Timeout: 90 * time.Second},
 		},
-		states:  NewStateStore(),
+		states:  NewStateStore(redis),
 		uploads: NewUploadQueue(),
 	}
 	if cfg.PlategaEnabled && cfg.PlategaMerchantID != "" && cfg.PlategaSecret != "" {
@@ -1986,18 +2148,18 @@ func (a *App) backupCallback(cb *CallbackQuery) {
 		return
 	}
 	if cb.Data == "backup:db" {
-		path, err := createSQLiteBackup(a.cfg)
+		path, err := createDatabaseBackup(a.cfg, a.db)
 		if err != nil {
 			a.tg.AnswerCallback(cb.ID, "Ошибка бекапа", true)
 			_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать бекап: <code>"+esc(err.Error())+"</code>", nil)
 			return
 		}
 		_ = pruneBackups(a.cfg)
-		_ = a.tg.SendDocument(cb.Message.Chat.ID, path, "Сжатый SQLite-бекап базы бота")
+		_ = a.tg.SendDocument(cb.Message.Chat.ID, path, "Сжатый PostgreSQL-бекап базы бота")
 		return
 	}
 	if cb.Data == "backup:json" {
-		path, err := createJSONBackup(a.cfg, a.db)
+		path, err := createPublicJSONBackup(a.cfg, a.db)
 		if err != nil {
 			a.tg.AnswerCallback(cb.ID, "Ошибка бекапа", true)
 			_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать JSON-бекап: <code>"+esc(err.Error())+"</code>", nil)
@@ -2009,7 +2171,7 @@ func (a *App) backupCallback(cb *CallbackQuery) {
 	}
 	if cb.Data == "backup:list" {
 		files := listBackups(a.cfg)
-		text := "🗄️ <b>Последние SQLite-бекапы</b>\n\n"
+		text := "🗄️ <b>Последние PostgreSQL-бекапы</b>\n\n"
 		if len(files) == 0 {
 			text += "Бекапов пока нет."
 		}
@@ -2023,10 +2185,10 @@ func (a *App) backupCallback(cb *CallbackQuery) {
 	if cb.Data == "backup:restore" {
 		files := listBackups(a.cfg)
 		if len(files) == 0 {
-			a.edit(cb, "Нет SQLite-бекапов для восстановления.", backupKeyboard())
+			a.edit(cb, "Нет PostgreSQL-бекапов для восстановления.", backupKeyboard())
 			return
 		}
-		a.edit(cb, "♻️ <b>Восстановление бекапа</b>\n\nВыберите SQLite-бекап. Перед восстановлением будет создан свежий safety-бекап.", restoreBackupKeyboard(files))
+		a.edit(cb, "♻️ <b>Восстановление бекапа</b>\n\nВыберите PostgreSQL-бекап. Перед восстановлением будет создан свежий safety-бекап.", restoreBackupKeyboard(files))
 		return
 	}
 }
@@ -2039,20 +2201,20 @@ func (a *App) restoreBackupCallback(cb *CallbackQuery) {
 		a.tg.AnswerCallback(cb.ID, "Бекап не найден", true)
 		return
 	}
-	safety, safetyErr := createSQLiteBackup(a.cfg)
+	safety, safetyErr := createDatabaseBackup(a.cfg, a.db)
 	if safetyErr != nil {
 		a.tg.AnswerCallback(cb.ID, "Не удалось создать safety-бекап", true)
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать safety-бекап: <code>"+esc(safetyErr.Error())+"</code>", nil)
 		return
 	}
-	if err := restoreSQLiteBackup(files[index], a.cfg.DatabasePath); err != nil {
+	if err := restoreDatabaseBackup(files[index], a.db); err != nil {
 		a.tg.AnswerCallback(cb.ID, "Не удалось восстановить", true)
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось восстановить базу: <code>"+esc(err.Error())+"</code>", nil)
 		return
 	}
 	a.edit(
 		cb,
-		"♻️ База восстановлена из <code>"+esc(filepath.Base(files[index]))+"</code>.\n\nSafety-бекап: <code>"+esc(filepath.Base(safety))+"</code>\nПерезапустите контейнеры, чтобы Go DB service перечитал файл.",
+		"♻️ База восстановлена из <code>"+esc(filepath.Base(files[index]))+"</code>.\n\nSafety-бекап: <code>"+esc(filepath.Base(safety))+"</code>",
 		adminKeyboard(),
 	)
 }
@@ -2061,7 +2223,7 @@ func (a *App) autoBackupLoop() {
 	ticker := time.NewTicker(time.Duration(a.cfg.AutoBackupIntervalHours) * time.Hour)
 	defer ticker.Stop()
 	for {
-		path, err := createSQLiteBackup(a.cfg)
+		path, err := createDatabaseBackup(a.cfg, a.db)
 		if err != nil {
 			log.Printf("auto backup failed: %v", err)
 		} else {
@@ -2294,7 +2456,7 @@ func deleteConfirmKeyboard(id int64) *InlineKeyboardMarkup {
 
 func backupKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
-		{{Text: "🗄️ Создать SQLite", CallbackData: "backup:db"}, {Text: "📦 Создать JSON", CallbackData: "backup:json"}},
+		{{Text: "🗄️ Создать PostgreSQL", CallbackData: "backup:db"}, {Text: "📦 Создать JSON", CallbackData: "backup:json"}},
 		{{Text: "📋 Список", CallbackData: "backup:list"}, {Text: "♻️ Восстановить", CallbackData: "backup:restore"}},
 		{{Text: "🛠️ В админку", CallbackData: "admin"}},
 	})
@@ -2333,7 +2495,7 @@ func loadConfig() Config {
 		DefaultQuotaGB:               envInt("DEFAULT_QUOTA_GB", 10),
 		DatabaseURL:                  strings.TrimRight(env("DATABASE_URL", "http://bot-db:8080"), "/"),
 		DatabaseAPIToken:             env("DATABASE_API_TOKEN", ""),
-		DatabasePath:                 env("DATABASE_PATH", "data/bot.sqlite3"),
+		RedisURL:                     env("REDIS_URL", "redis://redis:6379/0"),
 		BackupDir:                    env("BACKUP_DIR", "backups"),
 		LogDir:                       env("LOG_DIR", "logs"),
 		EnableSupportBlock:           envBool("ENABLE_SUPPORT_BLOCK", true),
@@ -2687,29 +2849,25 @@ func min(a, b int) int {
 	return b
 }
 
-func createSQLiteBackup(cfg Config) (string, error) {
-	source := cfg.DatabasePath
-	if _, err := os.Stat(source); err != nil {
-		if _, altErr := os.Stat("/app/data/bot.sqlite3"); altErr == nil {
-			source = "/app/data/bot.sqlite3"
-		}
+func createDatabaseBackup(cfg Config, db *DB) (string, error) {
+	users, err := db.ListUsers("", 100000, 0)
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(cfg.BackupDir, 0o755); err != nil {
 		return "", err
 	}
-	in, err := os.Open(source)
-	if err != nil {
-		return "", err
-	}
-	defer in.Close()
-	path := filepath.Join(cfg.BackupDir, "bot-"+time.Now().UTC().Format("20060102-150405")+".sqlite3.gz")
+	path := filepath.Join(cfg.BackupDir, "bot-"+time.Now().UTC().Format("20060102-150405")+".postgres.json.gz")
 	out, err := os.Create(path)
 	if err != nil {
 		return "", err
 	}
 	defer out.Close()
 	gz := gzip.NewWriter(out)
-	if _, err := io.Copy(gz, in); err != nil {
+	payload := map[string]any{"generated_at": time.Now().UTC().Format(time.RFC3339), "storage": "postgres", "users": users}
+	encoder := json.NewEncoder(gz)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(payload); err != nil {
 		_ = gz.Close()
 		return "", err
 	}
@@ -2719,7 +2877,7 @@ func createSQLiteBackup(cfg Config) (string, error) {
 	return path, nil
 }
 
-func createJSONBackup(cfg Config, db *DB) (string, error) {
+func createPublicJSONBackup(cfg Config, db *DB) (string, error) {
 	users, err := db.ListUsers("", 100000, 0)
 	if err != nil {
 		return "", err
@@ -2730,7 +2888,7 @@ func createJSONBackup(cfg Config, db *DB) (string, error) {
 	if err := os.MkdirAll(cfg.BackupDir, 0o755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(cfg.BackupDir, "users-"+time.Now().UTC().Format("20060102-150405")+".json.gz")
+	path := filepath.Join(cfg.BackupDir, "users-public-"+time.Now().UTC().Format("20060102-150405")+".json.gz")
 	out, err := os.Create(path)
 	if err != nil {
 		return "", err
@@ -2750,11 +2908,8 @@ func createJSONBackup(cfg Config, db *DB) (string, error) {
 	return path, nil
 }
 
-func restoreSQLiteBackup(backupPath, targetPath string) error {
+func restoreDatabaseBackup(backupPath string, db *DB) error {
 	if _, err := os.Stat(backupPath); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
 	in, err := os.Open(backupPath)
@@ -2767,25 +2922,17 @@ func restoreSQLiteBackup(backupPath, targetPath string) error {
 		return err
 	}
 	defer gz.Close()
-	tmp := targetPath + ".restore-tmp"
-	out, err := os.Create(tmp)
-	if err != nil {
+	var payload struct {
+		Users []User `json:"users"`
+	}
+	if err := json.NewDecoder(gz).Decode(&payload); err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, gz); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, targetPath)
+	return db.RestoreUsers(payload.Users)
 }
 
 func listBackups(cfg Config) []string {
-	files, _ := filepath.Glob(filepath.Join(cfg.BackupDir, "*.sqlite3.gz"))
+	files, _ := filepath.Glob(filepath.Join(cfg.BackupDir, "*.postgres.json.gz"))
 	sortByModTime(files)
 	if len(files) > 10 {
 		files = files[:10]
@@ -2794,7 +2941,7 @@ func listBackups(cfg Config) []string {
 }
 
 func pruneBackups(cfg Config) error {
-	files, _ := filepath.Glob(filepath.Join(cfg.BackupDir, "*.sqlite3.gz"))
+	files, _ := filepath.Glob(filepath.Join(cfg.BackupDir, "*.postgres.json.gz"))
 	cutoff := time.Now().Add(-time.Duration(cfg.BackupRetentionDays) * 24 * time.Hour)
 	for _, file := range files {
 		info, err := os.Stat(file)

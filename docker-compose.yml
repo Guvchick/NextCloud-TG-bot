@@ -1,16 +1,51 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   bot-db:
     build:
       context: .
       dockerfile: dbservice/Dockerfile
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       DB_LISTEN_ADDR: ":8080"
-      DATABASE_PATH: /app/data/bot.sqlite3
-    volumes:
-      - ./data:/app/data
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_SSLMODE: disable
 
   telegram-nextcloud-bot:
     build:
@@ -18,15 +53,22 @@ services:
       dockerfile: botgo/Dockerfile
     restart: unless-stopped
     depends_on:
-      - bot-db
+      bot-db:
+        condition: service_started
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       DATABASE_URL: http://bot-db:8080
+      REDIS_URL: redis://redis:6379/0
     volumes:
-      - ./data:/app/data
       - ./backups:/app/backups
       - ./logs:/app/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "${NEXTCLOUD_HOSTNAME:-cloud.example.com}:host-gateway"
+
+volumes:
+  postgres_data:
+  redis_data:

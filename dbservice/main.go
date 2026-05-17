@@ -15,12 +15,12 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 )
 
 type Server struct {
@@ -28,6 +28,29 @@ type Server struct {
 	token    string
 	aead     cipher.AEAD
 	premium  int
+}
+
+var placeholderPattern = regexp.MustCompile(`\?`)
+
+func pg(query string) string {
+	index := 0
+	return placeholderPattern.ReplaceAllStringFunc(query, func(_ string) string {
+		index++
+		return "$" + strconv.Itoa(index)
+	})
+}
+
+func waitForPostgres(ctx context.Context, db *sql.DB) error {
+	var last error
+	for i := 0; i < 30; i++ {
+		if err := db.PingContext(ctx); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+		time.Sleep(time.Second)
+	}
+	return last
 }
 
 type RPCRequest struct {
@@ -73,16 +96,29 @@ type Payment struct {
 }
 
 func main() {
-	dbPath := env("DATABASE_PATH", "/app/data/bot.sqlite3")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		log.Fatalf("mkdir data: %v", err)
+	dsn := env("POSTGRES_DSN", "")
+	if dsn == "" {
+		dsn = fmt.Sprintf(
+			"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+			env("POSTGRES_HOST", "postgres"),
+			env("POSTGRES_PORT", "5432"),
+			env("POSTGRES_USER", "bot"),
+			os.Getenv("POSTGRES_PASSWORD"),
+			env("POSTGRES_DB", "bot"),
+			env("POSTGRES_SSLMODE", "disable"),
+		)
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatalf("open sqlite: %v", err)
+		log.Fatalf("open postgres: %v", err)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(envInt("POSTGRES_MAX_OPEN_CONNS", 10))
+	db.SetMaxIdleConns(envInt("POSTGRES_MAX_IDLE_CONNS", 5))
+	db.SetConnMaxLifetime(30 * time.Minute)
+	if err := waitForPostgres(context.Background(), db); err != nil {
+		log.Fatalf("postgres unavailable: %v", err)
+	}
 
 	srv := &Server{
 		db:      db,
@@ -104,9 +140,6 @@ func main() {
 	if err := srv.initSchema(context.Background()); err != nil {
 		log.Fatalf("init schema: %v", err)
 	}
-	if err := chmodDB(dbPath); err != nil {
-		log.Printf("chmod db warning: %v", err)
-	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +148,7 @@ func main() {
 	mux.HandleFunc("/rpc", srv.handleRPC)
 
 	addr := env("DB_LISTEN_ADDR", ":8080")
-	log.Printf("Go DB service listening on %s, db=%s", addr, dbPath)
+	log.Printf("Go DB service listening on %s, postgres=%s/%s", addr, env("POSTGRES_HOST", "postgres"), env("POSTGRES_DB", "bot"))
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
@@ -171,7 +204,7 @@ func (s *Server) dispatch(ctx context.Context, method string, p map[string]any) 
 		}
 		return nil, s.exec(ctx, "UPDATE users SET is_supporter = ?, supporter_until = ?, updated_at = ? WHERE telegram_id = ?", boolInt(p, "is_supporter"), until, now(), int64Param(p, "telegram_id"))
 	case "expire_supporters":
-		res, err := s.db.ExecContext(ctx, `UPDATE users SET is_supporter = 0, supporter_until = NULL, updated_at = ? WHERE is_supporter = 1 AND supporter_until IS NOT NULL AND supporter_until <= ?`, now(), now())
+		res, err := s.db.ExecContext(ctx, pg(`UPDATE users SET is_supporter = 0, supporter_until = NULL, updated_at = ? WHERE is_supporter = 1 AND supporter_until IS NOT NULL AND supporter_until <= ?`), now(), now())
 		if err != nil {
 			return nil, err
 		}
@@ -203,27 +236,17 @@ func (s *Server) dispatch(ctx context.Context, method string, p map[string]any) 
 		return s.countUsers(ctx, strPtrParam(p, "status"))
 	case "approved_telegram_ids":
 		return s.approvedTelegramIDs(ctx)
+	case "restore_users":
+		return nil, s.restoreUsers(ctx, p)
 	default:
 		return nil, fmt.Errorf("unknown method %s", method)
 	}
 }
 
 func (s *Server) initSchema(ctx context.Context) error {
-	pragmas := []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA secure_delete = ON",
-	}
-	for _, q := range pragmas {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			return err
-		}
-	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			telegram_id INTEGER PRIMARY KEY,
+			telegram_id BIGINT PRIMARY KEY,
 			username TEXT,
 			first_name TEXT,
 			last_name TEXT,
@@ -246,7 +269,7 @@ func (s *Server) initSchema(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS payments (
 			transaction_id TEXT PRIMARY KEY,
-			telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+			telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
 			provider TEXT NOT NULL,
 			amount INTEGER NOT NULL CHECK (amount > 0),
 			currency TEXT NOT NULL,
@@ -256,6 +279,9 @@ func (s *Server) initSchema(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
+		`CREATE INDEX IF NOT EXISTS users_status_created_idx ON users (status, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS users_username_idx ON users (lower(username))`,
+		`CREATE INDEX IF NOT EXISTS payments_telegram_id_idx ON payments (telegram_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -276,23 +302,21 @@ func (s *Server) initSchema(ctx context.Context) error {
 }
 
 func (s *Server) ensureColumn(ctx context.Context, table, name, typ string) error {
-	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	var exists bool
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2
+		)`,
+		table,
+		name,
+	).Scan(&exists)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var colName, colType string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &colName, &colType, &notNull, &defaultValue, &pk); err != nil {
-			return err
-		}
-		if colName == name {
-			return nil
-		}
+	if exists {
+		return nil
 	}
 	_, err = s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+name+" "+typ)
 	return err
@@ -322,7 +346,7 @@ func (s *Server) approveUser(ctx context.Context, id int64, ncUserID, password s
 }
 
 func (s *Server) getUser(ctx context.Context, id int64) (*User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users WHERE telegram_id = ?`, id)
+	rows, err := s.db.QueryContext(ctx, pg(`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users WHERE telegram_id = ?`), id)
 	if err != nil {
 		return nil, err
 	}
@@ -341,9 +365,9 @@ func (s *Server) listUsers(ctx context.Context, status *string, limit, offset in
 	var rows *sql.Rows
 	var err error
 	if status != nil && *status != "" {
-		rows, err = s.db.QueryContext(ctx, `SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, *status, limit, offset)
+		rows, err = s.db.QueryContext(ctx, pg(`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`), *status, limit, offset)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+		rows, err = s.db.QueryContext(ctx, pg(`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?`), limit, offset)
 	}
 	if err != nil {
 		return nil, err
@@ -364,16 +388,16 @@ func (s *Server) searchUsers(ctx context.Context, query string, limit int) ([]Us
 	id, _ := strconv.ParseInt(query, 10, 64)
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at
+		pg(`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at
 		FROM users
 		WHERE telegram_id = ?
-			OR username LIKE ? COLLATE NOCASE
-			OR first_name LIKE ? COLLATE NOCASE
-			OR last_name LIKE ? COLLATE NOCASE
+			OR username ILIKE ?
+			OR first_name ILIKE ?
+			OR last_name ILIKE ?
 		ORDER BY
-			CASE WHEN telegram_id = ? THEN 0 WHEN username = ? COLLATE NOCASE THEN 1 ELSE 2 END,
+			CASE WHEN telegram_id = ? THEN 0 WHEN lower(username) = lower(?) THEN 1 ELSE 2 END,
 			created_at DESC
-		LIMIT ?`,
+		LIMIT ?`),
 		id,
 		like,
 		like,
@@ -411,7 +435,7 @@ func (s *Server) scanUsers(rows *sql.Rows) ([]User, error) {
 func (s *Server) countUsers(ctx context.Context, status *string) (int, error) {
 	var row *sql.Row
 	if status != nil && *status != "" {
-		row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE status = ?", *status)
+		row = s.db.QueryRowContext(ctx, pg("SELECT COUNT(*) FROM users WHERE status = ?"), *status)
 	} else {
 		row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users")
 	}
@@ -440,7 +464,7 @@ func (s *Server) approvedTelegramIDs(ctx context.Context) ([]int64, error) {
 }
 
 func (s *Server) getSetting(ctx context.Context, key string) (*string, error) {
-	row := s.db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", key)
+	row := s.db.QueryRowContext(ctx, pg("SELECT value FROM settings WHERE key = ?"), key)
 	var value string
 	if err := row.Scan(&value); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -459,7 +483,7 @@ func (s *Server) listSettings(ctx context.Context, prefix *string) (map[string]s
 	var rows *sql.Rows
 	var err error
 	if prefix != nil && *prefix != "" {
-		rows, err = s.db.QueryContext(ctx, "SELECT key, value FROM settings WHERE key LIKE ?", *prefix+"%")
+		rows, err = s.db.QueryContext(ctx, pg("SELECT key, value FROM settings WHERE key LIKE ?"), *prefix+"%")
 	} else {
 		rows, err = s.db.QueryContext(ctx, "SELECT key, value FROM settings")
 	}
@@ -487,7 +511,7 @@ func (s *Server) createPayment(ctx context.Context, p map[string]any) error {
 }
 
 func (s *Server) getPayment(ctx context.Context, id string) (*Payment, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT transaction_id, telegram_id, provider, amount, currency, status, payment_url, payload, created_at, updated_at FROM payments WHERE transaction_id = ?`, id)
+	row := s.db.QueryRowContext(ctx, pg(`SELECT transaction_id, telegram_id, provider, amount, currency, status, payment_url, payload, created_at, updated_at FROM payments WHERE transaction_id = ?`), id)
 	var p Payment
 	if err := row.Scan(&p.TransactionID, &p.TelegramID, &p.Provider, &p.Amount, &p.Currency, &p.Status, &p.PaymentURL, &p.Payload, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -498,8 +522,88 @@ func (s *Server) getPayment(ctx context.Context, id string) (*Payment, error) {
 	return &p, nil
 }
 
+func (s *Server) restoreUsers(ctx context.Context, p map[string]any) error {
+	raw, err := json.Marshal(p["users"])
+	if err != nil {
+		return err
+	}
+	var users []User
+	if err := json.Unmarshal(raw, &users); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt := pg(`INSERT INTO users (
+		telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password,
+		quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(telegram_id) DO UPDATE SET
+		username = excluded.username,
+		first_name = excluded.first_name,
+		last_name = excluded.last_name,
+		status = excluded.status,
+		language = excluded.language,
+		nc_user_id = excluded.nc_user_id,
+		nc_password = excluded.nc_password,
+		quota_gb = excluded.quota_gb,
+		is_supporter = excluded.is_supporter,
+		supporter_until = excluded.supporter_until,
+		is_disabled = excluded.is_disabled,
+		created_at = excluded.created_at,
+		updated_at = excluded.updated_at,
+		approved_at = excluded.approved_at`)
+	for _, u := range users {
+		status := u.Status
+		if status == "" {
+			status = "requested"
+		}
+		language := u.Language
+		if language == "" {
+			language = "ru"
+		}
+		createdAt := u.CreatedAt
+		if createdAt == "" {
+			createdAt = now()
+		}
+		updatedAt := u.UpdatedAt
+		if updatedAt == "" {
+			updatedAt = now()
+		}
+		var password *string
+		if u.NCPassword != nil {
+			encrypted := s.encrypt(*u.NCPassword)
+			password = &encrypted
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			stmt,
+			u.TelegramID,
+			u.Username,
+			u.FirstName,
+			u.LastName,
+			status,
+			language,
+			u.NCUserID,
+			password,
+			u.QuotaGB,
+			u.IsSupporter,
+			u.SupporterUntil,
+			u.IsDisabled,
+			createdAt,
+			updatedAt,
+			u.ApprovedAt,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Server) exec(ctx context.Context, query string, args ...any) error {
-	_, err := s.db.ExecContext(ctx, query, args...)
+	_, err := s.db.ExecContext(ctx, pg(query), args...)
 	return err
 }
 
@@ -590,20 +694,6 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return v
-}
-
-func chmodDB(path string) error {
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if _, err := os.Stat(p); err == nil {
-			if err := os.Chmod(p, 0o600); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func strParam(p map[string]any, key string) string {
