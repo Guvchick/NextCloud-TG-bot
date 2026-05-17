@@ -1,0 +1,165 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+)
+
+func main() {
+	loadDotEnv(".env")
+	cfg := loadConfig()
+	configureLogging(cfg)
+	redis, err := NewRedisClient(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("redis config: %v", err)
+	}
+
+	app := &App{
+		cfg: cfg,
+		tg: &Telegram{
+			token:   cfg.BotToken,
+			apiURL:  "https://api.telegram.org/bot" + cfg.BotToken + "/",
+			fileURL: "https://api.telegram.org/file/bot" + cfg.BotToken + "/",
+			client:  &http.Client{Timeout: 90 * time.Second},
+		},
+		db: &DB{
+			baseURL: strings.TrimRight(cfg.DatabaseURL, "/"),
+			token:   cfg.DatabaseAPIToken,
+			client:  &http.Client{Timeout: 30 * time.Second},
+		},
+		nc: &Nextcloud{
+			baseURL:  strings.TrimRight(cfg.NextcloudInternalURL, "/"),
+			username: cfg.NextcloudAdminUser,
+			password: cfg.NextcloudAdminPassword,
+			client:   &http.Client{Timeout: 90 * time.Second},
+		},
+		states:  NewStateStore(redis),
+		uploads: NewUploadQueue(),
+	}
+	if cfg.PlategaEnabled && cfg.PlategaMerchantID != "" && cfg.PlategaSecret != "" {
+		app.platega = &Platega{
+			merchantID: cfg.PlategaMerchantID,
+			secret:     cfg.PlategaSecret,
+			baseURL:    cfg.PlategaBaseURL,
+			client:     &http.Client{Timeout: 30 * time.Second},
+		}
+	}
+
+	if err := app.db.Init(); err != nil {
+		log.Fatalf("init db: %v", err)
+	}
+	log.Printf("Go Telegram bot started. public_nextcloud=%s internal_nextcloud=%s db=%s", cfg.NextcloudURL, cfg.NextcloudInternalURL, cfg.DatabaseURL)
+
+	go app.uploadWorker()
+	go app.autoBackupLoop()
+	go app.nextcloudSyncLoop()
+	go app.premiumExpirationLoop()
+	app.poll()
+}
+
+func (a *App) poll() {
+	offset := 0
+	for {
+		updates, err := a.tg.GetUpdates(offset)
+		if err != nil {
+			log.Printf("getUpdates failed: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		for _, update := range updates {
+			if update.UpdateID >= offset {
+				offset = update.UpdateID + 1
+			}
+			a.handleUpdate(update)
+		}
+	}
+}
+
+func (a *App) handleUpdate(update Update) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic while handling update %d: %v", update.UpdateID, r)
+		}
+	}()
+	if update.PreCheckoutQuery != nil {
+		a.tg.AnswerPreCheckout(update.PreCheckoutQuery.ID, strings.HasPrefix(update.PreCheckoutQuery.InvoicePayload, "stars_donate:"))
+		return
+	}
+	if update.CallbackQuery != nil {
+		a.handleCallback(update.CallbackQuery)
+		return
+	}
+	if update.Message != nil {
+		a.handleMessage(update.Message)
+	}
+}
+
+func (a *App) handleMessage(msg *Message) {
+	if msg.From == nil {
+		return
+	}
+	userID := msg.From.ID
+	if msg.SuccessfulPayment != nil {
+		a.handleSuccessfulPayment(msg)
+		return
+	}
+	if st, ok := a.states.Get(userID); ok {
+		a.handleStateMessage(msg, st)
+		return
+	}
+	if strings.HasPrefix(msg.Text, "/") {
+		a.handleCommand(msg)
+		return
+	}
+	if a.hasUpload(msg) {
+		a.handleUpload(msg)
+	}
+}
+
+func (a *App) handleCommand(msg *Message) {
+	parts := strings.Fields(msg.Text)
+	command := strings.Split(strings.TrimPrefix(parts[0], "/"), "@")[0]
+	switch command {
+	case "start":
+		a.start(msg)
+	case "admin":
+		if a.isAdmin(msg.From.ID) {
+			_, _ = a.tg.SendMessage(msg.Chat.ID, a.adminSummary(), adminKeyboard())
+		}
+	case "health":
+		if a.isAdmin(msg.From.ID) {
+			a.health(msg.Chat.ID)
+		}
+	case "sync":
+		if a.isAdmin(msg.From.ID) {
+			checked, removed, err := a.syncNextcloudUsers()
+			if err != nil {
+				_, _ = a.tg.SendMessage(msg.Chat.ID, "⚠️ Синхронизация не удалась: <code>"+esc(err.Error())+"</code>", nil)
+				return
+			}
+			_, _ = a.tg.SendMessage(msg.Chat.ID, fmt.Sprintf("🔄 <b>Синхронизация завершена</b>\n\nПроверено: <b>%d</b>\nУдалено: <b>%d</b>", checked, removed), adminKeyboard())
+		}
+	case "search":
+		if a.isAdmin(msg.From.ID) {
+			query := strings.TrimSpace(strings.TrimPrefix(msg.Text, parts[0]))
+			a.renderSearch(msg.Chat.ID, query)
+		}
+	case "broadcast":
+		if a.isAdmin(msg.From.ID) {
+			text := strings.TrimSpace(strings.TrimPrefix(msg.Text, parts[0]))
+			a.broadcastText(msg.Chat.ID, text)
+		}
+	case "setsticker":
+		if a.isAdmin(msg.From.ID) {
+			a.setStickerStart(msg, parts)
+		}
+	case "stickers":
+		if a.isAdmin(msg.From.ID) {
+			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), adminKeyboard())
+		}
+	}
+}
+
