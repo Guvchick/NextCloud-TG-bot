@@ -13,7 +13,9 @@ services:
       - ./data:/app/data
 
   telegram-nextcloud-bot:
-    build: .
+    build:
+      context: .
+      dockerfile: botgo/Dockerfile
     restart: unless-stopped
     depends_on:
       - bot-db

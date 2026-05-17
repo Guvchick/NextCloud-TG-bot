@@ -197,6 +197,8 @@ func (s *Server) dispatch(ctx context.Context, method string, p map[string]any) 
 		return nil, s.exec(ctx, "UPDATE payments SET status = ?, updated_at = ? WHERE transaction_id = ?", strParam(p, "status"), now(), strParam(p, "transaction_id"))
 	case "list_users":
 		return s.listUsers(ctx, strPtrParam(p, "status"), intDefault(p, "limit", 10), intDefault(p, "offset", 0))
+	case "search_users":
+		return s.searchUsers(ctx, strParam(p, "query"), intDefault(p, "limit", 10))
 	case "count_users":
 		return s.countUsers(ctx, strPtrParam(p, "status"))
 	case "approved_telegram_ids":
@@ -343,6 +345,43 @@ func (s *Server) listUsers(ctx context.Context, status *string, limit, offset in
 	} else {
 		rows, err = s.db.QueryContext(ctx, `SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanUsers(rows)
+}
+
+func (s *Server) searchUsers(ctx context.Context, query string, limit int) ([]User, error) {
+	query = strings.TrimSpace(strings.TrimPrefix(query, "@"))
+	if query == "" {
+		return []User{}, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	like := "%" + query + "%"
+	id, _ := strconv.ParseInt(query, 10, 64)
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT telegram_id, username, first_name, last_name, status, language, nc_user_id, nc_password, quota_gb, is_supporter, supporter_until, is_disabled, created_at, updated_at, approved_at
+		FROM users
+		WHERE telegram_id = ?
+			OR username LIKE ? COLLATE NOCASE
+			OR first_name LIKE ? COLLATE NOCASE
+			OR last_name LIKE ? COLLATE NOCASE
+		ORDER BY
+			CASE WHEN telegram_id = ? THEN 0 WHEN username = ? COLLATE NOCASE THEN 1 ELSE 2 END,
+			created_at DESC
+		LIMIT ?`,
+		id,
+		like,
+		like,
+		like,
+		id,
+		query,
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
