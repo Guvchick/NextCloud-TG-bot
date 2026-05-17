@@ -13,12 +13,11 @@
 - Админ может сбросить пароль одобренному пользователю.
 - Админ может удалить пользователя из Nextcloud и базы бота.
 - Есть отключение и включение Nextcloud-пользователя.
-- Пользователь может отправить файл, фото, видео, аудио или документ прямо в бота, а бот загрузит его в облако.
+- Пользователь может отправить файл, фото, видео, аудио или документ прямо в бота, а бот поставит его в очередь и загрузит в облако.
 - Пользователь сразу видит текущий пароль в `/start` и может сменить его через кнопку.
 - Пользователь может переключить язык интерфейса: русский/английский.
-- Есть кнопка `Донат`.
-- Пользователь может привязать Boosty email, а бот автоматически сверяет активную поддержку и выдает иконку `💙 Поддержавший Boosty`.
-- Админ может вручную запустить Boosty-синхронизацию или поправить статус поддержавшего в карточке пользователя.
+- Есть отключаемая кнопка `Донат` с Telegram Stars и Platega.
+- После оплаты Telegram Stars пользователь получает премиум-иконку и приоритет в очереди загрузок.
 - Во вложенных пользовательских разделах есть кнопки возврата назад.
 - В пользовательском экране всегда видны квота, занятое место и шкала заполнения.
 - Есть ссылка на саппорт в Telegram и email.
@@ -41,28 +40,54 @@ cp .env.example .env
 4. Заполните `.env`:
 
 ```env
+# Telegram bot
 BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789,987654321
+
+# Nextcloud
 NEXTCLOUD_URL=https://cloud.example.com
 NEXTCLOUD_INTERNAL_URL=
 NEXTCLOUD_HOSTNAME=cloud.example.com
 NEXTCLOUD_ADMIN_USER=admin
-NEXTCLOUD_ADMIN_PASSWORD=nextcloud-app-password
+NEXTCLOUD_ADMIN_PASSWORD=nextcloud-admin-app-password
 DEFAULT_QUOTA_GB=10
+
+# Local storage
 DATABASE_PATH=data/bot.sqlite3
+DATABASE_SECRET_KEY=
 BACKUP_DIR=backups
 LOG_DIR=logs
 UPLOAD_FOLDER=Telegram uploads
+
+# User interface blocks
+ENABLE_SUPPORT_BLOCK=true
 SUPPORT_TELEGRAM=@support_username
 SUPPORT_EMAIL=support@example.com
-DONATE_URL=https://example.com/donate
-BOOSTY_ACCESS_TOKEN=
-BOOSTY_SUBSCRIBERS_URL=https://api.boosty.to/v1/blog/getapp/subscribers
-BOOSTY_SYNC_INTERVAL_MINUTES=60
+ENABLE_DONATE_BLOCK=true
+
+# Donations: Telegram Stars
+TELEGRAM_STARS_ENABLED=true
+TELEGRAM_STARS_AMOUNTS=50,100,250
+
+# Donations: Platega
+PLATEGA_ENABLED=true
+PLATEGA_URL=
+PLATEGA_MERCHANT_ID=
+PLATEGA_SECRET=
+PLATEGA_BASE_URL=https://app.platega.io
+PLATEGA_AMOUNTS_RUB=100,300,500
+PLATEGA_RETURN_URL=
+PLATEGA_FAILED_URL=
+DONATE_URL=
+
+# Background jobs and limits
 BACKUP_RETENTION_DAYS=7
 AUTO_BACKUP_INTERVAL_HOURS=24
 NEXTCLOUD_SYNC_INTERVAL_MINUTES=60
 TELEGRAM_MAX_DOWNLOAD_MB=20
+PREMIUM_DAYS=30
+
+# Optional custom stickers
 STICKER_WELCOME=
 STICKER_APPROVED=
 STICKER_UPLOAD_OK=
@@ -91,13 +116,19 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 
 Файлы из Telegram загружаются в корень диска пользователя. `UPLOAD_FOLDER` оставлен как legacy-настройка, но пользовательский сценарий ее не показывает.
 
-`SUPPORT_TELEGRAM`, `SUPPORT_EMAIL` и `DONATE_URL` показываются пользователю в отдельных кнопочных разделах.
+`DATABASE_SECRET_KEY` включает шифрование сохраненных Nextcloud-паролей в SQLite. Укажите длинную случайную строку и не меняйте ее после запуска: старые зашифрованные пароли без нее не расшифровать. Файл БД дополнительно создается с правами `0600`, папка данных - `0700`; SQLite работает с `foreign_keys`, `WAL`, `busy_timeout` и `secure_delete`.
 
-`BOOSTY_ACCESS_TOKEN` включает автоматическую выдачу иконки поддержавшего. Пользователь нажимает кнопку `Boosty`, отправляет email от Boosty, а бот раз в `BOOSTY_SYNC_INTERVAL_MINUTES` минут сверяет его с активными подписчиками. В админ-панели есть кнопка ручной синхронизации `Boosty`.
+`ENABLE_SUPPORT_BLOCK=false` полностью убирает кнопку поддержки. `SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю в разделе поддержки.
+
+`ENABLE_DONATE_BLOCK=false` полностью убирает кнопку доната. Внутри доната есть отдельные ветки `Telegram Stars` и `Platega`; их можно отдельно выключить через `TELEGRAM_STARS_ENABLED=false` и `PLATEGA_ENABLED=false`. `TELEGRAM_STARS_AMOUNTS` - суммы кнопок Stars через запятую.
+
+Для Platega можно задать статическую ссылку `PLATEGA_URL`, либо включить API-создание ссылок через `PLATEGA_MERCHANT_ID` и `PLATEGA_SECRET`. По документации Platega запросы идут на `https://app.platega.io/`, платежная ссылка создается через `POST /v2/transaction/process`, а статус проверяется через `GET /transaction/{id}`. `PLATEGA_AMOUNTS_RUB` задает суммы в рублях, `PLATEGA_RETURN_URL` и `PLATEGA_FAILED_URL` передаются в платеж при создании.
 
 `TELEGRAM_MAX_DOWNLOAD_MB` - лимит скачивания через Bot API. Если Telegram не дает скачать большой файл, бот заранее объяснит это пользователю и предложит загрузить файл напрямую через Nextcloud.
 
-`STICKER_*` - необязательные кастомные `file_id` стикеров. Если они не заданы или Telegram их отклонит, бот оставит базовые визуальные маркеры в тексте. Настроить можно через `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok`, `/setsticker error`, `/setsticker support`, `/setsticker donate`, `/setsticker boosty`, `/setsticker language`, `/setsticker password`.
+`PREMIUM_DAYS` - срок действия премиум-иконки после Telegram Stars, Platega или ручной выдачи админом. По умолчанию `30`, то есть примерно один месяц.
+
+`STICKER_*` - необязательные кастомные `file_id` стикеров. Если они не заданы или Telegram их отклонит, бот оставит базовые визуальные маркеры в тексте. Настроить можно через `/setsticker welcome`, `/setsticker approved`, `/setsticker upload_ok`, `/setsticker error`, `/setsticker support`, `/setsticker donate`, `/setsticker language`, `/setsticker password`.
 
 ## Запуск локально
 
@@ -122,7 +153,6 @@ docker compose up -d --build
 - `/admin` - открывает админ-панель.
 - `/health` - проверяет, может ли бот достучаться до Nextcloud API.
 - `/sync` - вручную сверяет базу бота с Nextcloud и удаляет из бота отсутствующих Nextcloud-пользователей.
-- `/boosty_sync` - вручную сверяет привязанные Boosty email и автоматически выдает/снимает иконку поддержавшего.
 
 ## Бекапы
 
@@ -135,6 +165,8 @@ docker compose up -d --build
 ## Загрузка файлов
 
 После одобрения пользователь может отправить боту файл, фото, видео, аудио, voice или animation. Бот скачает файл из Telegram и загрузит его в корень Nextcloud-аккаунта этого пользователя.
+
+Загрузки идут через очередь, чтобы одновременные файлы от разных пользователей не ломали Telegram API и WebDAV-загрузку. Пользователи с премиум-иконкой `⭐` получают приоритет и обрабатываются раньше обычной очереди.
 
 В карточке пользователя админ видит занятое место. Данные обновляются при открытии карточки.
 

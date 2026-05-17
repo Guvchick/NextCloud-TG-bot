@@ -50,20 +50,34 @@ class NextcloudClient:
             except Exception as exc:
                 raise NextcloudError(f"Nextcloud returned non-JSON response ({response.status}): {text[:300]}") from exc
 
-        if response.status >= 400:
-            raise NextcloudError(f"Nextcloud HTTP {response.status}: {text[:300]}")
-
         meta = payload.get("ocs", {}).get("meta", {})
         status = str(meta.get("status", "")).lower()
         status_code = int(meta.get("statuscode", 0))
+        message = str(meta.get("message") or "")
+        if (
+            status_code == 403
+            and "Password confirmation is required" in message
+            and "/ocs/v1.php/" in path
+        ):
+            return await self._request(method, path.replace("/ocs/v1.php/", "/ocs/v2.php/"), data)
+
+        if response.status >= 400:
+            if status_code == 403 and "Password confirmation is required" in message:
+                raise NextcloudError(
+                    "Nextcloud требует подтверждение пароля для этого admin-действия. "
+                    "Укажите в NEXTCLOUD_ADMIN_PASSWORD отдельный app password администратора и проверьте, "
+                    "что администратору разрешен Provisioning API."
+                )
+            raise NextcloudError(f"Nextcloud HTTP {response.status}: {text[:300]}")
+
         if status != "ok" and status_code not in {100, 200, 201, 202, 204}:
-            message = meta.get("message") or "unknown Nextcloud OCS error"
-            if (
-                status_code == 403
-                and "Password confirmation is required" in message
-                and "/ocs/v1.php/" in path
-            ):
-                return await self._request(method, path.replace("/ocs/v1.php/", "/ocs/v2.php/"), data)
+            message = message or "unknown Nextcloud OCS error"
+            if status_code == 403 and "Password confirmation is required" in message:
+                raise NextcloudError(
+                    "Nextcloud требует подтверждение пароля для этого admin-действия. "
+                    "Укажите в NEXTCLOUD_ADMIN_PASSWORD отдельный app password администратора и проверьте, "
+                    "что администратору разрешен Provisioning API."
+                )
             raise NextcloudError(f"Nextcloud OCS {status_code}: {message}")
         return payload.get("ocs", {}).get("data") or {}
 
@@ -107,11 +121,21 @@ class NextcloudClient:
             raise
 
     async def create_user(self, user_id: str, password: str) -> None:
-        await self._request(
-            "POST",
-            "/ocs/v1.php/cloud/users",
-            {"userid": user_id, "password": password},
-        )
+        try:
+            await self._request(
+                "POST",
+                "/ocs/v2.php/cloud/users",
+                {"userid": user_id, "password": password},
+            )
+        except NextcloudError as exc:
+            if "HTTP 404" in str(exc) or "OCS 404" in str(exc):
+                await self._request(
+                    "POST",
+                    "/ocs/v1.php/cloud/users",
+                    {"userid": user_id, "password": password},
+                )
+                return
+            raise
 
     async def set_user_value(self, user_id: str, key: str, value: str) -> None:
         data = {"key": key, "value": value}
@@ -205,5 +229,12 @@ class NextcloudClient:
         with local_path.open("rb") as file:
             status, text = await self._dav_request("PUT", user_id, password, remote_path, data=file)
         if status not in {200, 201, 204}:
+            if status == 403:
+                raise NextcloudError(
+                    "Nextcloud WebDAV upload HTTP 403: хранилище пользователя запретило создание файла. "
+                    "Проверьте, что пользователь включен, квота не исчерпана, в Files app можно создавать файлы, "
+                    "а File Access Control или права external storage не блокируют этот тип файла. "
+                    f"Ответ сервера: {text[:300]}"
+                )
             raise NextcloudError(f"Nextcloud WebDAV upload HTTP {status}: {text[:300]}")
         return remote_path

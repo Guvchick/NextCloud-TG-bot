@@ -10,7 +10,10 @@ def _labels(lang: str) -> dict[str, str]:
             "change_password": "🔐 Change password",
             "support": "💬 Support",
             "donate": "💙 Donate",
-            "boosty": "💙 Boosty",
+            "stars": "⭐ Telegram Stars",
+            "platega": "💳 Platega",
+            "pay": "💳 Pay",
+            "check_payment": "🔎 Check payment",
             "language": "🌐 Language",
             "back": "⬅️ Back",
             "ru": "Русский",
@@ -20,7 +23,10 @@ def _labels(lang: str) -> dict[str, str]:
         "change_password": "🔐 Сменить пароль",
         "support": "💬 Поддержка",
         "donate": "💙 Донат",
-        "boosty": "💙 Boosty",
+        "stars": "⭐ Telegram Stars",
+        "platega": "💳 Platega",
+        "pay": "💳 Оплатить",
+        "check_payment": "🔎 Проверить оплату",
         "language": "🌐 Язык",
         "back": "⬅️ Назад",
         "ru": "Русский",
@@ -28,13 +34,14 @@ def _labels(lang: str) -> dict[str, str]:
     }
 
 
-def account_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+def account_keyboard(lang: str = "ru", show_support: bool = True, show_donate: bool = True) -> InlineKeyboardMarkup:
     labels = _labels(lang)
     builder = InlineKeyboardBuilder()
     builder.button(text=labels["change_password"], callback_data="account:change_password")
-    builder.button(text=labels["support"], callback_data="account:support")
-    builder.button(text=labels["donate"], callback_data="account:donate")
-    builder.button(text=labels["boosty"], callback_data="account:boosty")
+    if show_support:
+        builder.button(text=labels["support"], callback_data="account:support")
+    if show_donate:
+        builder.button(text=labels["donate"], callback_data="account:donate")
     builder.button(text=labels["language"], callback_data="account:language")
     builder.adjust(1)
     return builder.as_markup()
@@ -44,6 +51,69 @@ def account_back_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     labels = _labels(lang)
     builder = InlineKeyboardBuilder()
     builder.button(text=labels["back"], callback_data="account:home")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def support_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=labels["back"], callback_data="account:home")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def donate_keyboard(
+    lang: str = "ru",
+    show_stars: bool = False,
+    show_platega: bool = False,
+    donate_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    if show_stars:
+        builder.button(text=labels["stars"], callback_data="donate:stars")
+    if show_platega:
+        builder.button(text=labels["platega"], callback_data="donate:platega")
+    if donate_url:
+        builder.button(text=labels["donate"], url=donate_url)
+    builder.button(text=labels["back"], callback_data="account:home")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def stars_amounts_keyboard(lang: str = "ru", amounts: tuple[int, ...] = ()) -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    for amount in amounts:
+        builder.button(text=f"⭐ {amount}", callback_data=f"stars:{amount}")
+    builder.button(text=labels["back"], callback_data="account:donate")
+    builder.adjust(3, 1)
+    return builder.as_markup()
+
+
+def platega_amounts_keyboard(
+    lang: str = "ru",
+    amounts: tuple[int, ...] = (),
+    static_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    for amount in amounts:
+        builder.button(text=f"💳 {amount} RUB", callback_data=f"platega:{amount}")
+    if static_url:
+        builder.button(text=labels["pay"], url=static_url)
+    builder.button(text=labels["back"], callback_data="account:donate")
+    builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+
+def platega_payment_keyboard(lang: str, payment_url: str, transaction_id: str) -> InlineKeyboardMarkup:
+    labels = _labels(lang)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=labels["pay"], url=payment_url)
+    builder.button(text=labels["check_payment"], callback_data=f"platega_check:{transaction_id}")
+    builder.button(text=labels["back"], callback_data="donate:platega")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -73,9 +143,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🗄️ Бекапы", callback_data="backup")
     builder.button(text="📣 Рассылка", callback_data="broadcast")
     builder.button(text="🔄 Синхронизация", callback_data="sync")
-    builder.button(text="💙 Boosty", callback_data="boosty:sync")
     builder.button(text="✨ Стикеры", callback_data="stickers")
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 1)
     return builder.as_markup()
 
 
@@ -119,9 +188,9 @@ def user_keyboard(
         builder.button(text="⚙️ Другое", callback_data=f"quotacustom:{telegram_id}")
         builder.button(text="🔐 Сбросить пароль", callback_data=f"resetpass:{telegram_id}")
         if is_supporter:
-            builder.button(text="💙 Убрать Boosty", callback_data=f"supporter:{telegram_id}:0")
+            builder.button(text="⭐ Убрать премиум", callback_data=f"supporter:{telegram_id}:0")
         else:
-            builder.button(text="💙 Поддержал Boosty", callback_data=f"supporter:{telegram_id}:1")
+            builder.button(text="⭐ Сделать премиум", callback_data=f"supporter:{telegram_id}:1")
         if is_disabled:
             builder.button(text="🟢 Включить", callback_data=f"enable:{telegram_id}")
         else:

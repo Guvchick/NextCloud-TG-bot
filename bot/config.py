@@ -17,19 +17,30 @@ class Config:
     nextcloud_admin_password: str
     default_quota_gb: int
     database_path: Path
+    database_secret_key: str | None
     backup_dir: Path
     log_dir: Path
     upload_folder: str
+    enable_support_block: bool
     support_telegram: str | None
     support_email: str | None
+    enable_donate_block: bool
     donate_url: str | None
-    boosty_access_token: str | None
-    boosty_subscribers_url: str
-    boosty_sync_interval_minutes: int
+    telegram_stars_enabled: bool
+    telegram_stars_amounts: tuple[int, ...]
+    platega_enabled: bool
+    platega_url: str | None
+    platega_merchant_id: str | None
+    platega_secret: str | None
+    platega_base_url: str
+    platega_amounts_rub: tuple[int, ...]
+    platega_return_url: str | None
+    platega_failed_url: str | None
     backup_retention_days: int
     auto_backup_interval_hours: int
     nextcloud_sync_interval_minutes: int
     telegram_max_download_mb: int
+    premium_days: int
     sticker_welcome: str | None
     sticker_approved: str | None
     sticker_upload_ok: str | None
@@ -66,6 +77,29 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+def _bool_env(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "y", "on", "да"}
+
+
+def _int_tuple_env(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    values: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        value = int(item)
+        if value <= 0:
+            raise RuntimeError(f"{name} values must be greater than zero")
+        values.append(value)
+    return tuple(values) or default
+
+
 def load_config() -> Config:
     load_dotenv()
 
@@ -85,22 +119,30 @@ def load_config() -> Config:
         nextcloud_admin_password=_required("NEXTCLOUD_ADMIN_PASSWORD"),
         default_quota_gb=default_quota_gb,
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.sqlite3")),
+        database_secret_key=_optional("DATABASE_SECRET_KEY"),
         backup_dir=Path(os.getenv("BACKUP_DIR", "backups")),
         log_dir=Path(os.getenv("LOG_DIR", "logs")),
         upload_folder=os.getenv("UPLOAD_FOLDER", "Telegram uploads").strip() or "Telegram uploads",
+        enable_support_block=_bool_env("ENABLE_SUPPORT_BLOCK", True),
         support_telegram=_optional("SUPPORT_TELEGRAM"),
         support_email=_optional("SUPPORT_EMAIL"),
+        enable_donate_block=_bool_env("ENABLE_DONATE_BLOCK", True),
         donate_url=_optional("DONATE_URL"),
-        boosty_access_token=_optional("BOOSTY_ACCESS_TOKEN"),
-        boosty_subscribers_url=os.getenv(
-            "BOOSTY_SUBSCRIBERS_URL",
-            "https://api.boosty.to/v1/blog/getapp/subscribers",
-        ).strip(),
-        boosty_sync_interval_minutes=_int_env("BOOSTY_SYNC_INTERVAL_MINUTES", 60),
+        telegram_stars_enabled=_bool_env("TELEGRAM_STARS_ENABLED", True),
+        telegram_stars_amounts=_int_tuple_env("TELEGRAM_STARS_AMOUNTS", (50, 100, 250)),
+        platega_enabled=_bool_env("PLATEGA_ENABLED", True),
+        platega_url=_optional("PLATEGA_URL"),
+        platega_merchant_id=_optional("PLATEGA_MERCHANT_ID"),
+        platega_secret=_optional("PLATEGA_SECRET"),
+        platega_base_url=os.getenv("PLATEGA_BASE_URL", "https://app.platega.io").strip().rstrip("/"),
+        platega_amounts_rub=_int_tuple_env("PLATEGA_AMOUNTS_RUB", (100, 300, 500)),
+        platega_return_url=_optional("PLATEGA_RETURN_URL"),
+        platega_failed_url=_optional("PLATEGA_FAILED_URL"),
         backup_retention_days=_int_env("BACKUP_RETENTION_DAYS", 7),
         auto_backup_interval_hours=_int_env("AUTO_BACKUP_INTERVAL_HOURS", 24),
         nextcloud_sync_interval_minutes=_int_env("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),
         telegram_max_download_mb=_int_env("TELEGRAM_MAX_DOWNLOAD_MB", 20),
+        premium_days=_int_env("PREMIUM_DAYS", 30),
         sticker_welcome=_optional("STICKER_WELCOME"),
         sticker_approved=_optional("STICKER_APPROVED"),
         sticker_upload_ok=_optional("STICKER_UPLOAD_OK"),

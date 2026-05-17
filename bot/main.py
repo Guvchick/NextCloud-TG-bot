@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import html
+import itertools
 import logging
 import re
 import secrets
 import string
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -18,7 +21,7 @@ from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, LabeledPrice, Message, PreCheckoutQuery
 
 from bot.backups import (
     create_json_backup,
@@ -27,7 +30,6 @@ from bot.backups import (
     prune_old_backups,
     restore_sqlite_backup,
 )
-from bot.boosty import BoostyClient
 from bot.config import Config, load_config
 from bot.db import Database
 from bot.keyboards import (
@@ -37,16 +39,35 @@ from bot.keyboards import (
     backup_keyboard,
     broadcast_confirm_keyboard,
     delete_confirm_keyboard,
+    donate_keyboard,
+    stars_amounts_keyboard,
+    platega_amounts_keyboard,
+    platega_payment_keyboard,
     request_review_keyboard,
     restore_backup_keyboard,
     language_keyboard,
+    support_keyboard,
     user_keyboard,
     users_keyboard,
 )
 from bot.nextcloud import NextcloudClient, NextcloudCredentials, NextcloudError
+from bot.platega import PlategaClient, PlategaError
 
 router = Router()
 PAGE_SIZE = 8
+UPLOAD_QUEUE_COUNTER = itertools.count()
+
+
+@dataclass(frozen=True)
+class UploadJob:
+    telegram_id: int
+    chat_id: int
+    status_message_id: int
+    file_id: str
+    filename: str
+    file_size: int
+    lang: str
+    is_supporter: bool
 
 
 class BroadcastState(StatesGroup):
@@ -60,10 +81,6 @@ class QuotaState(StatesGroup):
 
 class UserPasswordState(StatesGroup):
     waiting_password = State()
-
-
-class BoostyEmailState(StatesGroup):
-    waiting_email = State()
 
 
 class StickerState(StatesGroup):
@@ -91,8 +108,31 @@ def valid_password(password: str) -> bool:
     return len(password) >= 8 and len(password) <= 128 and not password.isspace()
 
 
-def valid_email(email: str) -> bool:
-    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email.strip()))
+def premium_until(config: Config) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=config.premium_days)).isoformat(timespec="seconds")
+
+
+def is_premium(user: dict | None) -> bool:
+    if not user or not user.get("is_supporter"):
+        return False
+    until = user.get("supporter_until")
+    if not until:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(str(until))
+    except ValueError:
+        return False
+    return expires_at > datetime.now(timezone.utc)
+
+
+def premium_until_text(user: dict) -> str:
+    until = user.get("supporter_until")
+    if not until:
+        return "-"
+    try:
+        return datetime.fromisoformat(str(until)).strftime("%Y-%m-%d")
+    except ValueError:
+        return str(until)
 
 
 TEXT = {
@@ -106,19 +146,28 @@ TEXT = {
         "upload_hint": "Отправьте файл в этот чат, и бот загрузит его в облако.",
         "support_title": "Поддержка",
         "support_empty": "Контакты поддержки пока не настроены.",
-        "donate_title": "Донат",
-        "donate_empty": "Ссылка на донат пока не настроена.",
-        "donate_text": "Поддержать проект можно по ссылке ниже.",
-        "boosty_title": "Boosty",
-        "boosty_prompt": "Отправьте email, который указан у вас на Boosty. Я буду автоматически проверять активную поддержку и выдавать иконку.",
-        "boosty_current": "Привязанный email",
-        "boosty_empty": "email еще не привязан",
-        "boosty_active": "Иконка поддержавшего активна",
-        "boosty_waiting": "Иконка появится автоматически после следующей проверки активной поддержки.",
-        "boosty_not_configured": "Автосверка Boosty пока не настроена администратором, но email можно сохранить заранее.",
-        "boosty_saved": "Boosty email сохранен.",
-        "boosty_email_invalid": "Отправьте корректный email.",
-        "supporter_badge": "Поддержавший Boosty",
+        "support_disabled": "Раздел поддержки отключен.",
+        "donate_title": "Поддержать проект",
+        "donate_empty": "Способы поддержки пока не настроены.",
+        "donate_text": "Можно поддержать проект через Telegram Stars или Platega.",
+        "donate_disabled": "Раздел доната отключен.",
+        "donate_choose": "Выберите способ поддержки.",
+        "stars_title": "Telegram Stars",
+        "stars_text": "Выберите сумму в звездах.",
+        "stars_invoice_title": "Поддержка проекта",
+        "stars_invoice_description": "Спасибо за поддержку проекта!",
+        "stars_paid": "Спасибо за поддержку! Премиум-иконка активирована.",
+        "platega_title": "Platega",
+        "platega_text": "Выберите сумму в рублях. Бот создаст платежную ссылку Platega.",
+        "platega_disabled": "Platega отключена.",
+        "platega_not_configured": "Platega не настроена: заполните PLATEGA_MERCHANT_ID и PLATEGA_SECRET или задайте PLATEGA_URL.",
+        "platega_created": "Платеж создан. После оплаты нажмите «Проверить оплату».",
+        "platega_pending": "Платеж пока не подтвержден. Статус: {status}",
+        "platega_paid": "Оплата подтверждена! Премиум-иконка активирована.",
+        "platega_failed": "Платеж не активен. Статус: {status}",
+        "platega_create_failed": "Не удалось создать платеж Platega",
+        "platega_check_failed": "Не удалось проверить платеж Platega",
+        "premium_badge": "Премиум-поддержка",
         "language_title": "Выберите язык",
         "language_saved": "Язык сохранен.",
         "change_password_prompt": "Отправьте новый пароль для облака.\n\nМинимум 8 символов. После смены бот обновит сохраненный пароль для загрузок.",
@@ -130,6 +179,8 @@ TEXT = {
         "webdav_password_missing": "Для этого аккаунта нет сохраненного WebDAV-пароля. Попросите администратора сбросить пароль в панели.",
         "file_unknown": "Не удалось определить файл для загрузки.",
         "file_too_big": "Telegram не дает боту скачать этот файл: он больше <b>{limit} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака.",
+        "upload_queued": "📥 <b>{filename}</b> ({size}) добавлен в очередь.\n\nМесто в очереди: <b>{position}</b>.",
+        "upload_queued_supporter": "⭐ У вас премиум-приоритет: загрузка пройдет раньше обычной очереди.",
         "uploading": "Загружаю <b>{filename}</b> ({size}) в облако...",
         "uploaded": "Файл загружен",
         "path": "Путь",
@@ -159,19 +210,28 @@ TEXT = {
         "support": "Support",
         "support_title": "Support",
         "support_empty": "Support contacts are not configured yet.",
-        "donate_title": "Donate",
-        "donate_empty": "Donation link is not configured yet.",
-        "donate_text": "You can support the project using the link below.",
-        "boosty_title": "Boosty",
-        "boosty_prompt": "Send the email you use on Boosty. I will automatically check active support and grant the supporter icon.",
-        "boosty_current": "Linked email",
-        "boosty_empty": "no email linked yet",
-        "boosty_active": "Supporter icon is active",
-        "boosty_waiting": "The icon will appear automatically after the next active-support check.",
-        "boosty_not_configured": "Boosty auto-sync is not configured by the admin yet, but you can save the email now.",
-        "boosty_saved": "Boosty email saved.",
-        "boosty_email_invalid": "Send a valid email.",
-        "supporter_badge": "Boosty supporter",
+        "support_disabled": "Support section is disabled.",
+        "donate_title": "Support the project",
+        "donate_empty": "Donation methods are not configured yet.",
+        "donate_text": "You can support the project with Telegram Stars or Platega.",
+        "donate_disabled": "Donation section is disabled.",
+        "donate_choose": "Choose a support method.",
+        "stars_title": "Telegram Stars",
+        "stars_text": "Choose an amount in Stars.",
+        "stars_invoice_title": "Project support",
+        "stars_invoice_description": "Thank you for supporting the project!",
+        "stars_paid": "Thank you for the support! Premium icon is now active.",
+        "platega_title": "Platega",
+        "platega_text": "Choose an amount in RUB. The bot will create a Platega payment link.",
+        "platega_disabled": "Platega is disabled.",
+        "platega_not_configured": "Platega is not configured: set PLATEGA_MERCHANT_ID and PLATEGA_SECRET or provide PLATEGA_URL.",
+        "platega_created": "Payment created. Press Check payment after paying.",
+        "platega_pending": "Payment is not confirmed yet. Status: {status}",
+        "platega_paid": "Payment confirmed! Premium icon is now active.",
+        "platega_failed": "Payment is not active. Status: {status}",
+        "platega_create_failed": "Could not create Platega payment",
+        "platega_check_failed": "Could not check Platega payment",
+        "premium_badge": "Premium support",
         "language_title": "Choose language",
         "language_saved": "Language saved.",
         "change_password_prompt": "Send a new cloud password.\n\nMinimum 8 characters. The bot will update the saved password for uploads.",
@@ -183,6 +243,8 @@ TEXT = {
         "webdav_password_missing": "No saved WebDAV password for this account. Ask an admin to reset the password.",
         "file_unknown": "Could not detect a file to upload.",
         "file_too_big": "Telegram does not allow the bot to download this file: it is larger than <b>{limit} MB</b>.\n\nUpload large files directly through the cloud web interface.",
+        "upload_queued": "📥 <b>{filename}</b> ({size}) has been added to the queue.\n\nQueue position: <b>{position}</b>.",
+        "upload_queued_supporter": "⭐ You have premium priority: your upload will go before the regular queue.",
         "uploading": "Uploading <b>{filename}</b> ({size}) to the cloud...",
         "uploaded": "File uploaded",
         "path": "Path",
@@ -224,9 +286,9 @@ def event_mark(event: str) -> str:
         "backup": "🗄️",
         "support": "💬",
         "donate": "💙",
-        "boosty": "💙",
         "language": "🌐",
         "password": "🔐",
+        "premium": "⭐",
     }.get(event, "•")
 
 
@@ -268,6 +330,32 @@ def telegram_download_limit_bytes(config: Config) -> int:
     return config.telegram_max_download_mb * 1024 * 1024
 
 
+def support_enabled(config: Config) -> bool:
+    return config.enable_support_block
+
+
+def donate_enabled(config: Config) -> bool:
+    return config.enable_donate_block
+
+
+def account_markup(config: Config, lang: str):
+    return account_keyboard(lang, show_support=support_enabled(config), show_donate=donate_enabled(config))
+
+
+def stars_amounts(config: Config) -> tuple[int, ...]:
+    if not config.telegram_stars_enabled:
+        return ()
+    return config.telegram_stars_amounts
+
+
+def platega_url(config: Config) -> str | None:
+    return config.platega_url if config.platega_enabled else None
+
+
+def platega_api_enabled(config: Config) -> bool:
+    return bool(config.platega_enabled and config.platega_merchant_id and config.platega_secret)
+
+
 def support_text(config: Config, lang: str = "ru") -> str:
     lines = [f"<b>{tr(lang, 'support_title')}</b>", ""]
     if config.support_telegram:
@@ -285,29 +373,20 @@ def support_text(config: Config, lang: str = "ru") -> str:
 
 
 def donate_text(config: Config, lang: str = "ru") -> str:
-    if not config.donate_url:
+    if not stars_amounts(config) and not platega_url(config) and not platega_api_enabled(config) and not config.donate_url:
         return f"<b>{tr(lang, 'donate_title')}</b>\n\n{tr(lang, 'donate_empty')}"
-    return (
-        f"<b>{tr(lang, 'donate_title')}</b>\n\n"
-        f"{tr(lang, 'donate_text')}\n"
-        f'<a href="{html.escape(config.donate_url)}">{html.escape(config.donate_url)}</a>'
-    )
-
-
-def boosty_text(user: dict, config: Config, lang: str = "ru") -> str:
-    email = user.get("boosty_email")
-    current = f"<code>{html.escape(email)}</code>" if email else f"<b>{tr(lang, 'boosty_empty')}</b>"
-    status = tr(lang, "boosty_active") if user.get("is_supporter") else tr(lang, "boosty_waiting")
     lines = [
-        f"{event_mark('boosty')} <b>{tr(lang, 'boosty_title')}</b>",
+        f"<b>{tr(lang, 'donate_title')}</b>",
         "",
-        f"📬 {tr(lang, 'boosty_current')}: {current}",
-        f"💙 {status}",
-        "",
-        tr(lang, "boosty_prompt"),
+        tr(lang, "donate_text"),
+        tr(lang, "donate_choose"),
     ]
-    if not config.boosty_access_token:
-        lines.extend(["", f"⚠️ {tr(lang, 'boosty_not_configured')}"])
+    if stars_amounts(config):
+        lines.append("⭐ Telegram Stars")
+    if platega_url(config) or platega_api_enabled(config):
+        lines.append("💳 Platega")
+    if config.donate_url:
+        lines.append(f'💙 <a href="{html.escape(config.donate_url)}">{html.escape(config.donate_url)}</a>')
     return "\n".join(lines)
 
 
@@ -368,7 +447,7 @@ async def storage_text(user: dict, nc: NextcloudClient, lang: str = "ru") -> str
 
 async def account_text(user: dict, nc: NextcloudClient, config: Config) -> str:
     lang = lang_of(user)
-    supporter_line = f"💙 <b>{tr(lang, 'supporter_badge')}</b>\n" if user.get("is_supporter") else ""
+    supporter_line = f"⭐ <b>{tr(lang, 'premium_badge')}</b> до <b>{premium_until_text(user)}</b>\n" if is_premium(user) else ""
     password = user.get("nc_password")
     password_line = (
         f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
@@ -473,47 +552,6 @@ async def sync_nextcloud_users(db: Database, nc: NextcloudClient) -> tuple[int, 
     return checked, removed
 
 
-async def sync_boosty_supporters(db: Database, boosty: BoostyClient) -> tuple[int, int, int, int]:
-    active_emails = await boosty.fetch_active_emails()
-    checked = 0
-    activated = 0
-    deactivated = 0
-    skipped = 0
-    for user in await db.approved_users():
-        email = str(user.get("boosty_email") or "").strip().lower()
-        if not email:
-            skipped += 1
-            continue
-
-        checked += 1
-        should_be_supporter = email in active_emails
-        is_supporter = bool(user.get("is_supporter"))
-        if should_be_supporter == is_supporter:
-            continue
-
-        await db.set_supporter(int(user["telegram_id"]), should_be_supporter)
-        if should_be_supporter:
-            activated += 1
-        else:
-            deactivated += 1
-        logging.info(
-            "Boosty supporter auto-sync changed user: telegram_id=%s email=%s is_supporter=%s",
-            user["telegram_id"],
-            email,
-            should_be_supporter,
-        )
-
-    logging.info(
-        "Boosty sync completed: active_emails=%s checked=%s skipped=%s activated=%s deactivated=%s",
-        len(active_emails),
-        checked,
-        skipped,
-        activated,
-        deactivated,
-    )
-    return checked, activated, deactivated, len(active_emails)
-
-
 @router.message(CommandStart())
 async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
     if not message.from_user:
@@ -538,7 +576,7 @@ async def start(message: Message, bot: Bot, db: Database, nc: NextcloudClient, c
             await message.answer("Аккаунт не найден в Nextcloud, запись бота очищена. Отправьте /start еще раз.")
             return
         await send_event_sticker(bot, db, config, message.chat.id, "welcome")
-        await message.answer(await account_text(user, nc, config), reply_markup=account_keyboard(lang_of(user)))
+        await message.answer(await account_text(user, nc, config), reply_markup=account_markup(config, lang_of(user)))
         logging.info("Approved user opened account panel: telegram_id=%s", telegram_id)
         return
 
@@ -601,28 +639,6 @@ async def sync_command(message: Message, db: Database, nc: NextcloudClient, conf
     await message.answer(f"{event_mark('sync')} Синхронизация завершена.\nПроверено: <b>{checked}</b>\nУдалено из БД бота: <b>{removed}</b>")
 
 
-@router.message(Command("boosty_sync"))
-async def boosty_sync_command(message: Message, db: Database, boosty: BoostyClient | None, config: Config) -> None:
-    if not message.from_user or not is_admin(message.from_user.id, config):
-        return
-    if not boosty:
-        await message.answer("Boosty-синхронизация не настроена. Заполните <code>BOOSTY_ACCESS_TOKEN</code>.")
-        return
-    try:
-        checked, activated, deactivated, active = await sync_boosty_supporters(db, boosty)
-    except Exception as exc:
-        logging.exception("Manual Boosty sync failed")
-        await message.answer(f"{event_mark('error')} Boosty-синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
-        return
-    await message.answer(
-        f"{event_mark('boosty')} <b>Boosty-синхронизация завершена</b>\n\n"
-        f"Активных email у Boosty: <b>{active}</b>\n"
-        f"Проверено привязок: <b>{checked}</b>\n"
-        f"Выдано иконок: <b>{activated}</b>\n"
-        f"Снято иконок: <b>{deactivated}</b>"
-    )
-
-
 async def stickers_text(db: Database, config: Config) -> str:
     settings = await db.list_settings("sticker_")
     return (
@@ -634,7 +650,6 @@ async def stickers_text(db: Database, config: Config) -> str:
         f"error: <b>{'кастомный' if settings.get('sticker_error') or config.sticker_error else 'базовый'}</b> {event_mark('error')}\n"
         f"support: <b>{'кастомный' if settings.get('sticker_support') else 'базовый'}</b> {event_mark('support')}\n"
         f"donate: <b>{'кастомный' if settings.get('sticker_donate') else 'базовый'}</b> {event_mark('donate')}\n"
-        f"boosty: <b>{'кастомный' if settings.get('sticker_boosty') else 'базовый'}</b> {event_mark('boosty')}\n"
         f"language: <b>{'кастомный' if settings.get('sticker_language') else 'базовый'}</b> {event_mark('language')}\n"
         f"password: <b>{'кастомный' if settings.get('sticker_password') else 'базовый'}</b> {event_mark('password')}\n\n"
         "Команды настройки:\n"
@@ -644,7 +659,6 @@ async def stickers_text(db: Database, config: Config) -> str:
         "<code>/setsticker error</code>\n"
         "<code>/setsticker support</code>\n"
         "<code>/setsticker donate</code>\n"
-        "<code>/setsticker boosty</code>\n"
         "<code>/setsticker language</code>\n"
         "<code>/setsticker password</code>\n\n"
         "После команды отправьте нужный стикер."
@@ -672,9 +686,9 @@ async def set_sticker_command(message: Message, state: FSMContext, config: Confi
     if not message.from_user or not is_admin(message.from_user.id, config):
         return
     parts = (message.text or "").split(maxsplit=1)
-    allowed = {"welcome", "approved", "upload_ok", "error", "support", "donate", "boosty", "language", "password"}
+    allowed = {"welcome", "approved", "upload_ok", "error", "support", "donate", "language", "password"}
     if len(parts) != 2 or parts[1].strip() not in allowed:
-        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|boosty|language|password</code>")
+        await message.answer("Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|language|password</code>")
         return
     event = parts[1].strip()
     await state.set_state(StickerState.waiting_sticker)
@@ -695,72 +709,233 @@ async def save_sticker(message: Message, state: FSMContext, db: Database, config
 
 @router.callback_query(F.data == "account:support")
 async def account_support(callback: CallbackQuery, bot: Bot, db: Database, config: Config) -> None:
+    if not support_enabled(config):
+        await callback.answer(tr("ru", "support_disabled"), show_alert=True)
+        return
     user = await db.get_user(callback.from_user.id)
     lang = lang_of(user)
     await send_event_sticker(bot, db, config, callback.message.chat.id, "support")
-    await safe_edit_text(callback.message, support_text(config, lang), reply_markup=account_back_keyboard(lang))
+    await safe_edit_text(
+        callback.message,
+        support_text(config, lang),
+        reply_markup=support_keyboard(lang),
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data == "account:donate")
 async def account_donate(callback: CallbackQuery, bot: Bot, db: Database, config: Config) -> None:
+    if not donate_enabled(config):
+        await callback.answer(tr("ru", "donate_disabled"), show_alert=True)
+        return
     user = await db.get_user(callback.from_user.id)
     lang = lang_of(user)
     await send_event_sticker(bot, db, config, callback.message.chat.id, "donate")
-    await safe_edit_text(callback.message, donate_text(config, lang), reply_markup=account_back_keyboard(lang))
+    await safe_edit_text(
+        callback.message,
+        donate_text(config, lang),
+        reply_markup=donate_keyboard(
+            lang,
+            show_stars=bool(stars_amounts(config)),
+            show_platega=bool(platega_url(config) or platega_api_enabled(config)),
+            donate_url=config.donate_url,
+        ),
+    )
     await callback.answer()
 
 
-@router.callback_query(F.data == "account:boosty")
-async def account_boosty(callback: CallbackQuery, state: FSMContext, bot: Bot, db: Database, config: Config) -> None:
+@router.callback_query(F.data == "donate:stars")
+async def donate_stars_panel(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not donate_enabled(config) or not stars_amounts(config):
+        await callback.answer(tr("ru", "donate_disabled"), show_alert=True)
+        return
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    await safe_edit_text(
+        callback.message,
+        f"⭐ <b>{tr(lang, 'stars_title')}</b>\n\n{tr(lang, 'stars_text')}",
+        reply_markup=stars_amounts_keyboard(lang, stars_amounts(config)),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("stars:"))
+async def stars_donate(callback: CallbackQuery, db: Database, bot: Bot, config: Config) -> None:
+    if not donate_enabled(config) or not config.telegram_stars_enabled:
+        await callback.answer(tr("ru", "donate_disabled"), show_alert=True)
+        return
     user = await db.get_user(callback.from_user.id)
     lang = lang_of(user)
     if not user or user["status"] != "approved" or user["is_disabled"]:
         await callback.answer(tr(lang, "access_inactive"), show_alert=True)
         return
-    await state.set_state(BoostyEmailState.waiting_email)
-    await send_event_sticker(bot, db, config, callback.message.chat.id, "boosty")
-    await safe_edit_text(callback.message, boosty_text(user, config, lang), reply_markup=account_back_keyboard(lang))
+    amount = int(callback.data.split(":", 1)[1])
+    if amount not in stars_amounts(config):
+        await callback.answer("Недоступная сумма", show_alert=True)
+        return
+    await bot.send_invoice(
+        chat_id=callback.message.chat.id,
+        title=tr(lang, "stars_invoice_title"),
+        description=tr(lang, "stars_invoice_description"),
+        payload=f"stars_donate:{callback.from_user.id}:{amount}",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"{amount} Stars", amount=amount)],
+    )
     await callback.answer()
 
 
-@router.message(BoostyEmailState.waiting_email)
-async def account_boosty_email_apply(
-    message: Message,
-    state: FSMContext,
+@router.callback_query(F.data == "donate:platega")
+async def donate_platega_panel(callback: CallbackQuery, db: Database, config: Config) -> None:
+    if not donate_enabled(config) or not config.platega_enabled:
+        await callback.answer(tr("ru", "platega_disabled"), show_alert=True)
+        return
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    if not platega_api_enabled(config) and not platega_url(config):
+        await callback.answer(tr(lang, "platega_not_configured"), show_alert=True)
+        return
+    await safe_edit_text(
+        callback.message,
+        f"💳 <b>{tr(lang, 'platega_title')}</b>\n\n{tr(lang, 'platega_text')}",
+        reply_markup=platega_amounts_keyboard(
+            lang,
+            config.platega_amounts_rub if platega_api_enabled(config) else (),
+            platega_url(config),
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("platega:"))
+async def platega_create_payment(
+    callback: CallbackQuery,
     db: Database,
-    nc: NextcloudClient,
-    boosty: BoostyClient | None,
+    platega: PlategaClient | None,
     config: Config,
 ) -> None:
-    if not message.from_user:
+    if not donate_enabled(config) or not config.platega_enabled:
+        await callback.answer(tr("ru", "platega_disabled"), show_alert=True)
+        return
+    user = await db.get_user(callback.from_user.id)
+    lang = lang_of(user)
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await callback.answer(tr(lang, "access_inactive"), show_alert=True)
+        return
+    if not platega:
+        await callback.answer(tr(lang, "platega_not_configured"), show_alert=True)
+        return
+    amount = int(callback.data.split(":", 1)[1])
+    if amount not in config.platega_amounts_rub:
+        await callback.answer("Недоступная сумма", show_alert=True)
+        return
+
+    payload = f"platega_donate:{callback.from_user.id}:{amount}"
+    try:
+        payment = await platega.create_payment_link(
+            amount_rub=amount,
+            description=f"Cloud bot support from Telegram {callback.from_user.id}",
+            payload=payload,
+            return_url=config.platega_return_url,
+            failed_url=config.platega_failed_url,
+        )
+    except PlategaError as exc:
+        logging.exception("Failed to create Platega payment")
+        await callback.answer(tr(lang, "platega_create_failed"), show_alert=True)
+        await callback.message.answer(f"{event_mark('error')} {tr(lang, 'platega_create_failed')}: <code>{html.escape(str(exc))}</code>")
+        return
+
+    transaction_id = str(payment["transactionId"])
+    payment_url = str(payment["url"])
+    status = str(payment.get("status") or "PENDING")
+    await db.create_payment(
+        transaction_id=transaction_id,
+        telegram_id=callback.from_user.id,
+        provider="platega",
+        amount=amount,
+        currency="RUB",
+        status=status,
+        payment_url=payment_url,
+        payload=payload,
+    )
+    logging.info("Platega payment created: telegram_id=%s transaction_id=%s amount=%s", callback.from_user.id, transaction_id, amount)
+    await safe_edit_text(
+        callback.message,
+        f"💳 <b>{tr(lang, 'platega_title')}</b>\n\n"
+        f"{tr(lang, 'platega_created')}\n"
+        f"ID: <code>{html.escape(transaction_id)}</code>\n"
+        f"Сумма: <b>{amount} RUB</b>",
+        reply_markup=platega_payment_keyboard(lang, payment_url, transaction_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("platega_check:"))
+async def platega_check_payment(
+    callback: CallbackQuery,
+    db: Database,
+    platega: PlategaClient | None,
+    config: Config,
+) -> None:
+    transaction_id = callback.data.split(":", 1)[1]
+    payment = await db.get_payment(transaction_id)
+    if not payment:
+        await callback.answer("Платеж не найден", show_alert=True)
+        return
+    if payment["telegram_id"] != callback.from_user.id and not is_admin(callback.from_user.id, config):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    user = await db.get_user(int(payment["telegram_id"]))
+    lang = lang_of(user)
+    if not platega:
+        await callback.answer(tr(lang, "platega_not_configured"), show_alert=True)
+        return
+    try:
+        status_payload = await platega.get_transaction(transaction_id)
+    except PlategaError as exc:
+        logging.exception("Failed to check Platega payment")
+        await callback.answer(tr(lang, "platega_check_failed"), show_alert=True)
+        await callback.message.answer(f"{event_mark('error')} {tr(lang, 'platega_check_failed')}: <code>{html.escape(str(exc))}</code>")
+        return
+
+    status = str(status_payload.get("status") or "").upper()
+    await db.update_payment_status(transaction_id, status)
+    if status == "CONFIRMED":
+        await db.set_supporter(int(payment["telegram_id"]), True, premium_until(config))
+        logging.info("Platega payment confirmed: telegram_id=%s transaction_id=%s", payment["telegram_id"], transaction_id)
+        await callback.message.answer(
+            f"{event_mark('premium')} {tr(lang, 'platega_paid')}",
+            reply_markup=account_markup(config, lang),
+        )
+        await callback.answer("Оплачено")
+        return
+    if status in {"CANCELED", "CHARGEBACKED", "FAILED", "EXPIRED"}:
+        await callback.answer(tr(lang, "platega_failed", status=status), show_alert=True)
+        return
+    await callback.answer(tr(lang, "platega_pending", status=status or "UNKNOWN"), show_alert=True)
+
+
+@router.pre_checkout_query()
+async def stars_pre_checkout(pre_checkout: PreCheckoutQuery) -> None:
+    await pre_checkout.answer(ok=pre_checkout.invoice_payload.startswith("stars_donate:"))
+
+
+@router.message(F.successful_payment)
+async def stars_payment_success(message: Message, db: Database, config: Config) -> None:
+    if not message.from_user or not message.successful_payment:
+        return
+    if not message.successful_payment.invoice_payload.startswith("stars_donate:"):
         return
     user = await db.get_user(message.from_user.id)
     lang = lang_of(user)
-    if not user or user["status"] != "approved" or user["is_disabled"]:
-        await state.clear()
-        await message.answer(tr(lang, "access_inactive"))
-        return
-
-    email = (message.text or "").strip().lower()
-    if not valid_email(email):
-        await message.answer(tr(lang, "boosty_email_invalid"), reply_markup=account_back_keyboard(lang))
-        return
-
-    await db.set_boosty_email(message.from_user.id, email)
-    if boosty:
-        try:
-            await sync_boosty_supporters(db, boosty)
-        except Exception:
-            logging.exception("Boosty sync after email save failed")
-    user = await db.get_user(message.from_user.id) or user
-    lang = lang_of(user)
-    await state.clear()
-    await message.answer(
-        f"{event_mark('boosty')} {tr(lang, 'boosty_saved')}\n\n"
-        f"{await account_text(user, nc, config)}",
-        reply_markup=account_keyboard(lang),
+    await db.set_supporter(message.from_user.id, True, premium_until(config))
+    logging.info(
+        "Telegram Stars donation received: telegram_id=%s charge_id=%s stars=%s",
+        message.from_user.id,
+        message.successful_payment.telegram_payment_charge_id,
+        message.successful_payment.total_amount,
     )
+    await message.answer(f"{event_mark('premium')} {tr(lang, 'stars_paid')}", reply_markup=account_markup(config, lang))
 
 
 @router.callback_query(F.data == "account:language")
@@ -788,7 +963,7 @@ async def account_set_language(callback: CallbackQuery, db: Database, nc: Nextcl
         return
     await db.set_language(callback.from_user.id, language)
     user = await db.get_user(callback.from_user.id)
-    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_keyboard(language))
+    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_markup(config, language))
     await callback.answer(tr(language, "language_saved"))
 
 
@@ -800,7 +975,7 @@ async def account_home(callback: CallbackQuery, state: FSMContext, db: Database,
         await callback.answer(tr(lang_of(user), "access_inactive"), show_alert=True)
         return
     lang = lang_of(user)
-    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_keyboard(lang))
+    await safe_edit_text(callback.message, await account_text(user, nc, config), reply_markup=account_markup(config, lang))
     await callback.answer()
 
 
@@ -821,39 +996,6 @@ async def sync_panel(callback: CallbackQuery, db: Database, nc: NextcloudClient,
         f"{event_mark('sync')} <b>Синхронизация завершена</b>\n\n"
         f"Проверено: <b>{checked}</b>\n"
         f"Удалено из БД бота: <b>{removed}</b>",
-        reply_markup=admin_keyboard(),
-    )
-    await callback.answer("Готово")
-
-
-@router.callback_query(F.data == "boosty:sync")
-async def boosty_sync_panel(callback: CallbackQuery, db: Database, boosty: BoostyClient | None, config: Config) -> None:
-    if not callback.from_user or not is_admin(callback.from_user.id, config):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    if not boosty:
-        await safe_edit_text(
-            callback.message,
-            f"{event_mark('boosty')} <b>Boosty-синхронизация</b>\n\n"
-            "Не настроен <code>BOOSTY_ACCESS_TOKEN</code>.",
-            reply_markup=admin_keyboard(),
-        )
-        await callback.answer("Не настроено", show_alert=True)
-        return
-    try:
-        checked, activated, deactivated, active = await sync_boosty_supporters(db, boosty)
-    except Exception as exc:
-        logging.exception("Manual Boosty sync failed")
-        await callback.message.answer(f"{event_mark('error')} Boosty-синхронизация не удалась: <code>{html.escape(str(exc))}</code>")
-        await callback.answer("Ошибка", show_alert=True)
-        return
-    await safe_edit_text(
-        callback.message,
-        f"{event_mark('boosty')} <b>Boosty-синхронизация завершена</b>\n\n"
-        f"Активных email у Boosty: <b>{active}</b>\n"
-        f"Проверено привязок: <b>{checked}</b>\n"
-        f"Выдано иконок: <b>{activated}</b>\n"
-        f"Снято иконок: <b>{deactivated}</b>",
         reply_markup=admin_keyboard(),
     )
     await callback.answer("Готово")
@@ -910,12 +1052,101 @@ async def account_change_password_apply(
         f"{event_mark('approved')} {tr(lang, 'password_changed')}\n\n"
         f"{tr(lang, 'login')}: <code>{html.escape(user['nc_user_id'])}</code>\n"
         f"{tr(lang, 'password')}: <code>{html.escape(password)}</code>",
-        reply_markup=account_keyboard(lang),
+        reply_markup=account_markup(config, lang),
     )
 
 
+async def process_upload_job(
+    job: UploadJob,
+    bot: Bot,
+    db: Database,
+    nc: NextcloudClient,
+    config: Config,
+) -> None:
+    user = await db.get_user(job.telegram_id)
+    lang = lang_of(user) if user else job.lang
+    if not user or user["status"] != "approved" or user["is_disabled"]:
+        await bot.edit_message_text(
+            tr(lang, "upload_not_allowed"),
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+        return
+    if not user.get("nc_user_id") or not user.get("nc_password"):
+        await bot.edit_message_text(
+            tr(lang, "webdav_password_missing"),
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+        return
+
+    await bot.edit_message_text(
+        tr(lang, "uploading", filename=html.escape(job.filename), size=format_bytes(job.file_size)),
+        chat_id=job.chat_id,
+        message_id=job.status_message_id,
+    )
+
+    temp_file = tempfile.NamedTemporaryFile(prefix="tg-nextcloud-", delete=False)
+    temp_path = Path(temp_file.name)
+    temp_file.close()
+    try:
+        await bot.download(job.file_id, destination=temp_path)
+        remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], "", job.filename, temp_path)
+        logging.info(
+            "Upload completed from queue: telegram_id=%s remote_path=%s size=%s premium_priority=%s",
+            user["telegram_id"],
+            remote_path,
+            job.file_size,
+            job.is_supporter,
+        )
+        await send_event_sticker(bot, db, config, job.chat_id, "upload_ok")
+        await bot.edit_message_text(
+            f"{event_mark('upload_ok')} <b>{tr(lang, 'uploaded')}</b>\n\n"
+            f"{tr(lang, 'path')}: <code>{html.escape(remote_path)}</code>\n\n"
+            f"{await storage_text(user, nc, lang)}",
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+    except NextcloudError as exc:
+        logging.warning("Queued upload failed for telegram_id=%s filename=%s: %s", job.telegram_id, job.filename, exc)
+        await send_event_sticker(bot, db, config, job.chat_id, "error")
+        await bot.edit_message_text(
+            f"{event_mark('error')} {tr(lang, 'upload_failed')}: <code>{html.escape(str(exc))}</code>",
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+    except TelegramBadRequest as exc:
+        logging.warning(
+            "Telegram refused queued file download: telegram_id=%s filename=%s size=%s: %s",
+            job.telegram_id,
+            job.filename,
+            job.file_size,
+            exc,
+        )
+        await bot.edit_message_text(
+            f"{event_mark('error')} {tr(lang, 'telegram_download_failed', limit=config.telegram_max_download_mb)}",
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+    except Exception as exc:
+        logging.exception("Failed to process queued Telegram file upload")
+        await bot.edit_message_text(
+            f"{tr(lang, 'processing_failed')}: <code>{html.escape(str(exc))}</code>",
+            chat_id=job.chat_id,
+            message_id=job.status_message_id,
+        )
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 @router.message(StateFilter(None), F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.animation)
-async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: NextcloudClient, config: Config) -> None:
+async def upload_to_nextcloud(
+    message: Message,
+    bot: Bot,
+    db: Database,
+    upload_queue: asyncio.PriorityQueue,
+    config: Config,
+) -> None:
     if not message.from_user:
         return
 
@@ -947,37 +1178,33 @@ async def upload_to_nextcloud(message: Message, bot: Bot, db: Database, nc: Next
             f"{event_mark('error')} {tr(lang, 'file_too_big', limit=config.telegram_max_download_mb)}"
         )
         return
-    status_message = await message.answer(
-        tr(lang, "uploading", filename=html.escape(filename), size=format_bytes(file_size))
-    )
 
-    temp_file = tempfile.NamedTemporaryFile(prefix="tg-nextcloud-", delete=False)
-    temp_path = Path(temp_file.name)
-    temp_file.close()
-    try:
-        await bot.download(file_id, destination=temp_path)
-        remote_path = await nc.upload_file(user["nc_user_id"], user["nc_password"], "", filename, temp_path)
-        logging.info("Upload completed: telegram_id=%s remote_path=%s size=%s", user["telegram_id"], remote_path, file_size)
-        await send_event_sticker(bot, db, config, message.chat.id, "upload_ok")
-        await status_message.edit_text(
-            f"{event_mark('upload_ok')} <b>{tr(lang, 'uploaded')}</b>\n\n"
-            f"{tr(lang, 'path')}: <code>{html.escape(remote_path)}</code>\n\n"
-            f"{await storage_text(user, nc, lang)}"
-        )
-    except NextcloudError as exc:
-        logging.warning("Upload failed for telegram_id=%s filename=%s: %s", user["telegram_id"], filename, exc)
-        await send_event_sticker(bot, db, config, message.chat.id, "error")
-        await status_message.edit_text(f"{event_mark('error')} {tr(lang, 'upload_failed')}: <code>{html.escape(str(exc))}</code>")
-    except TelegramBadRequest as exc:
-        logging.warning("Telegram refused file download: telegram_id=%s filename=%s size=%s: %s", user["telegram_id"], filename, file_size, exc)
-        await status_message.edit_text(
-            f"{event_mark('error')} {tr(lang, 'telegram_download_failed', limit=config.telegram_max_download_mb)}"
-        )
-    except Exception as exc:
-        logging.exception("Failed to upload Telegram file to Nextcloud")
-        await status_message.edit_text(f"{tr(lang, 'processing_failed')}: <code>{html.escape(str(exc))}</code>")
-    finally:
-        temp_path.unlink(missing_ok=True)
+    is_supporter = is_premium(user)
+    priority = 0 if is_supporter else 10
+    position = upload_queue.qsize() + 1
+    queue_text = tr(lang, "upload_queued", filename=html.escape(filename), size=format_bytes(file_size), position=position)
+    if is_supporter:
+        queue_text += f"\n\n{tr(lang, 'upload_queued_supporter')}"
+    status_message = await message.answer(queue_text)
+    job = UploadJob(
+        telegram_id=int(user["telegram_id"]),
+        chat_id=message.chat.id,
+        status_message_id=status_message.message_id,
+        file_id=file_id,
+        filename=filename,
+        file_size=file_size,
+        lang=lang,
+        is_supporter=is_supporter,
+    )
+    await upload_queue.put((priority, next(UPLOAD_QUEUE_COUNTER), job))
+    logging.info(
+        "Upload queued: telegram_id=%s filename=%s size=%s priority=%s queue_size=%s",
+        user["telegram_id"],
+        filename,
+        file_size,
+        priority,
+        upload_queue.qsize(),
+    )
 
 
 @router.callback_query(F.data == "admin")
@@ -1023,7 +1250,7 @@ async def approve_user(callback: CallbackQuery, bot: Bot, db: Database, nc: Next
         f"🔐 {tr(lang, 'password')}: <code>{html.escape(password)}</code>\n"
         f"💾 {tr(lang, 'quota')}: <b>{config.default_quota_gb} GB</b>\n\n"
         f"{tr(lang, 'approved_hint')}",
-        reply_markup=account_keyboard(lang),
+        reply_markup=account_markup(config, lang),
     )
     await safe_edit_text(
         callback.message,
@@ -1094,7 +1321,7 @@ async def render_user_details(
         return
 
     disabled = bool(user["is_disabled"])
-    is_supporter = bool(user.get("is_supporter"))
+    is_supporter = is_premium(user)
     storage = await storage_text(user, nc) if nc and user["status"] == "approved" else "Занято: <b>нет данных</b>"
     text = (
         "<b>Пользователь</b>\n\n"
@@ -1102,8 +1329,7 @@ async def render_user_details(
         f"Telegram ID: <code>{telegram_id}</code>\n"
         f"Nextcloud ID: <code>{html.escape(user.get('nc_user_id') or '-')}</code>\n"
         f"Статус: <b>{html.escape(user['status'])}</b>\n"
-        f"Boosty: <b>{'💙 поддержавший' if is_supporter else 'нет'}</b>\n"
-        f"Boosty email: <code>{html.escape(user.get('boosty_email') or '-')}</code>\n"
+        f"Премиум: <b>{'⭐ до ' + premium_until_text(user) if is_supporter else 'нет'}</b>\n"
         f"Квота: <b>{user['quota_gb']} GB</b>\n"
         f"{storage}\n"
         f"Доступ: <b>{'отключен' if disabled else 'активен'}</b>"
@@ -1241,9 +1467,9 @@ async def set_supporter(callback: CallbackQuery, db: Database, nc: NextcloudClie
     _, telegram_id_raw, value_raw = callback.data.split(":")
     telegram_id = int(telegram_id_raw)
     is_supporter = value_raw == "1"
-    await db.set_supporter(telegram_id, is_supporter)
-    logging.info("Boosty supporter flag changed: telegram_id=%s is_supporter=%s", telegram_id, is_supporter)
-    await callback.answer("Статус Boosty обновлен")
+    await db.set_supporter(telegram_id, is_supporter, premium_until(config) if is_supporter else None)
+    logging.info("Premium flag changed: telegram_id=%s is_supporter=%s", telegram_id, is_supporter)
+    await callback.answer("Премиум-статус обновлен")
     await render_user_details(callback, db, nc, config, telegram_id)
 
 
@@ -1531,13 +1757,40 @@ async def nextcloud_sync_loop(db: Database, nc: NextcloudClient, config: Config)
         await asyncio.sleep(config.nextcloud_sync_interval_minutes * 60)
 
 
-async def boosty_sync_loop(db: Database, boosty: BoostyClient, config: Config) -> None:
+async def premium_expiration_loop(db: Database) -> None:
     while True:
         try:
-            await sync_boosty_supporters(db, boosty)
+            expired = await db.expire_supporters()
+            if expired:
+                logging.info("Expired premium supporters: %s", expired)
         except Exception:
-            logging.exception("Automatic Boosty sync failed")
-        await asyncio.sleep(config.boosty_sync_interval_minutes * 60)
+            logging.exception("Premium expiration check failed")
+        await asyncio.sleep(60 * 60)
+
+
+async def upload_worker_loop(
+    upload_queue: asyncio.PriorityQueue,
+    bot: Bot,
+    db: Database,
+    nc: NextcloudClient,
+    config: Config,
+) -> None:
+    while True:
+        priority, sequence, job = await upload_queue.get()
+        try:
+            logging.info(
+                "Upload worker picked job: telegram_id=%s filename=%s priority=%s sequence=%s queue_left=%s",
+                job.telegram_id,
+                job.filename,
+                priority,
+                sequence,
+                upload_queue.qsize(),
+            )
+            await process_upload_job(job, bot, db, nc, config)
+        except Exception:
+            logging.exception("Upload worker failed")
+        finally:
+            upload_queue.task_done()
 
 
 async def main() -> None:
@@ -1545,7 +1798,7 @@ async def main() -> None:
     configure_logging(config)
     logging.info("Bot starting. public_nextcloud=%s internal_nextcloud=%s", config.nextcloud_url, config.nextcloud_internal_url)
 
-    db = Database(config.database_path)
+    db = Database(config.database_path, secret_key=config.database_secret_key, premium_days=config.premium_days)
     await db.init()
 
     nc = NextcloudClient(
@@ -1555,37 +1808,37 @@ async def main() -> None:
             password=config.nextcloud_admin_password,
         )
     )
-    boosty = (
-        BoostyClient(config.boosty_access_token, config.boosty_subscribers_url)
-        if config.boosty_access_token
+    platega = (
+        PlategaClient(config.platega_merchant_id, config.platega_secret, config.platega_base_url)
+        if platega_api_enabled(config)
         else None
     )
-    if boosty:
-        logging.info("Boosty auto-sync enabled: interval_minutes=%s", config.boosty_sync_interval_minutes)
-    else:
-        logging.info("Boosty auto-sync disabled: BOOSTY_ACCESS_TOKEN is empty")
+    if config.platega_enabled and platega:
+        logging.info("Platega API payments enabled")
+    elif config.platega_enabled and config.platega_url:
+        logging.info("Platega static payment URL enabled")
     bot = Bot(
         token=config.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    upload_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     background_tasks = [
         asyncio.create_task(auto_backup_loop(db, config)),
         asyncio.create_task(nextcloud_sync_loop(db, nc, config)),
+        asyncio.create_task(premium_expiration_loop(db)),
+        asyncio.create_task(upload_worker_loop(upload_queue, bot, db, nc, config)),
     ]
-    if boosty:
-        background_tasks.append(asyncio.create_task(boosty_sync_loop(db, boosty, config)))
-
     try:
-        await dp.start_polling(bot, db=db, config=config, nc=nc, boosty=boosty)
+        await dp.start_polling(bot, db=db, config=config, nc=nc, platega=platega, upload_queue=upload_queue)
     finally:
         for task in background_tasks:
             task.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
         await nc.close()
-        if boosty:
-            await boosty.close()
+        if platega:
+            await platega.close()
         await bot.session.close()
 
 
