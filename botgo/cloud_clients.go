@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -284,4 +285,3 @@ func (nc *Nextcloud) UploadFile(userID, password, filename, localPath string) (s
 	}
 	return remotePath, nil
 }
-

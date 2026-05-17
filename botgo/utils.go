@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"html"
+	"log"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -257,4 +258,3 @@ func min(a, b int) int {
 	}
 	return b
 }
-

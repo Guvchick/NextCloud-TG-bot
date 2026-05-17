@@ -3,7 +3,6 @@ package main
 import (
 	"compress/gzip"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
