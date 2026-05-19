@@ -222,36 +222,6 @@ func eventMark(event string) string {
 	}
 }
 
-func (a *App) stickerFromConfig(event string) string {
-	switch event {
-	case "welcome":
-		return a.cfg.StickerWelcome
-	case "approved":
-		return a.cfg.StickerApproved
-	case "upload_ok":
-		return a.cfg.StickerUploadOK
-	case "error":
-		return a.cfg.StickerError
-	default:
-		return ""
-	}
-}
-
-func (a *App) sendEventSticker(chatID int64, event string) error {
-	stickerID, _ := a.db.GetSetting("sticker_" + event)
-	if stickerID == "" {
-		stickerID = a.stickerFromConfig(event)
-	}
-	if stickerID == "" {
-		return nil
-	}
-	if err := a.tg.SendSticker(chatID, stickerID); err != nil {
-		log.Printf("failed to send sticker: chat_id=%d event=%s err=%v", chatID, event, err)
-		return err
-	}
-	return nil
-}
-
 func min(a, b int) int {
 	if a < b {
 		return a

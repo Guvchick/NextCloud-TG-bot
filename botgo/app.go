@@ -36,8 +36,14 @@ func main() {
 			password: cfg.NextcloudAdminPassword,
 			client:   &http.Client{Timeout: 90 * time.Second},
 		},
-		states:  NewStateStore(redis),
-		uploads: NewUploadQueue(),
+		states:   NewStateStore(redis),
+		uploads:  NewUploadQueue(),
+		batches:  NewUploadBatchManager(),
+		quota:    NewQuotaCache(time.Duration(cfg.QuotaCacheSeconds) * time.Second),
+		stickers: NewStickerStore(cfg.StickerStoreFile),
+	}
+	if err := app.stickers.Load(); err != nil {
+		log.Printf("sticker store load failed: %v", err)
 	}
 	if cfg.PlategaEnabled && cfg.PlategaMerchantID != "" && cfg.PlategaSecret != "" {
 		app.platega = &Platega{
@@ -53,7 +59,9 @@ func main() {
 	}
 	log.Printf("Go Telegram bot started. public_nextcloud=%s internal_nextcloud=%s db=%s", cfg.NextcloudURL, cfg.NextcloudInternalURL, cfg.DatabaseURL)
 
-	go app.uploadWorker()
+	for i := 0; i < cfg.UploadWorkers; i++ {
+		go app.uploadWorker(i + 1)
+	}
 	go app.autoBackupLoop()
 	go app.nextcloudSyncLoop()
 	go app.premiumExpirationLoop()
@@ -158,8 +166,7 @@ func (a *App) handleCommand(msg *Message) {
 		}
 	case "stickers":
 		if a.isAdmin(msg.From.ID) {
-			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), adminKeyboard())
+			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), stickersKeyboard(a.stickers))
 		}
 	}
 }
-

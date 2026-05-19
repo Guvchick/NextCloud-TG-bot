@@ -8,9 +8,8 @@ import (
 
 func adminKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
-		{{Text: "👥 Пользователи", CallbackData: "users:all:0"}, {Text: "🔎 Поиск", CallbackData: "admin:search"}},
-		{{Text: "📝 Заявки", CallbackData: "users:requested:0"}, {Text: "🗄️ Бекапы", CallbackData: "backup"}},
-		{{Text: "📣 Рассылка", CallbackData: "broadcast"}, {Text: "🔄 Синхронизация", CallbackData: "sync"}},
+		{{Text: "👥 Пользователи", CallbackData: "users:menu"}, {Text: "📝 Заявки", CallbackData: "users:requested:0"}},
+		{{Text: "📣 Рассылка", CallbackData: "broadcast"}, {Text: "🔄 Синхр./восстановление", CallbackData: "maintenance"}},
 		{{Text: "✨ Стикеры", CallbackData: "stickers"}},
 	})
 }
@@ -128,6 +127,15 @@ func plategaPaymentKeyboard(paymentURL, transactionID string) *InlineKeyboardMar
 	})
 }
 
+func usersMenuKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "👥 Все", CallbackData: "users:all:0"}, {Text: "✅ Одобренные", CallbackData: "users:approved:0"}},
+		{{Text: "📝 Заявки", CallbackData: "users:requested:0"}, {Text: "❌ Отклоненные", CallbackData: "users:rejected:0"}},
+		{{Text: "🔎 Поиск", CallbackData: "users:search"}},
+		{{Text: "🛠️ В админку", CallbackData: "admin"}},
+	})
+}
+
 func usersKeyboard(users []User, status string, page int, hasNext bool) *InlineKeyboardMarkup {
 	rows := [][]InlineKeyboardButton{}
 	for _, user := range users {
@@ -148,7 +156,7 @@ func usersKeyboard(users []User, status string, page int, hasNext bool) *InlineK
 	if len(nav) > 0 {
 		rows = append(rows, nav)
 	}
-	rows = append(rows, []InlineKeyboardButton{{Text: "🛠️ В админку", CallbackData: "admin"}})
+	rows = append(rows, []InlineKeyboardButton{{Text: "🔎 Поиск", CallbackData: "users:search"}, {Text: "⬅️ Пользователи", CallbackData: "users:menu"}})
 	return keyboard(rows)
 }
 
@@ -191,8 +199,48 @@ func backupKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
 		{{Text: "🗄️ Создать PostgreSQL", CallbackData: "backup:db"}, {Text: "📦 Создать JSON", CallbackData: "backup:json"}},
 		{{Text: "📋 Список", CallbackData: "backup:list"}, {Text: "♻️ Восстановить", CallbackData: "backup:restore"}},
+		{{Text: "⬅️ Сервис", CallbackData: "maintenance"}},
+	})
+}
+
+func maintenanceKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "🔄 Синхронизировать пользователей", CallbackData: "sync"}},
+		{{Text: "☁️ Проверить мой клауд", CallbackData: "admincloud"}},
+		{{Text: "🗄️ Бекапы и восстановление", CallbackData: "backup"}},
 		{{Text: "🛠️ В админку", CallbackData: "admin"}},
 	})
+}
+
+func stickersKeyboard(store *StickerStore) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{}
+	for _, event := range stickerEvents {
+		mark := eventMark(event)
+		if value, ok := store.Get(event); ok {
+			if value.Kind == StickerKindCustomEmoji {
+				mark = "🧩"
+			} else {
+				mark = "🖼️"
+			}
+		}
+		rows = append(rows, []InlineKeyboardButton{{Text: mark + " " + event, CallbackData: "sticker:event:" + event}})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "🛠️ В админку", CallbackData: "admin"}})
+	return keyboard(rows)
+}
+
+func stickerEventKeyboard(event string, hasValue bool) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{
+		{{Text: "➕ Установить", CallbackData: "sticker:set:" + event}},
+	}
+	if hasValue {
+		rows = append(rows, []InlineKeyboardButton{
+			{Text: "👁️ Предпросмотр", CallbackData: "sticker:preview:" + event},
+			{Text: "🧹 Очистить", CallbackData: "sticker:clear:" + event},
+		})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Стикеры", CallbackData: "stickers"}})
+	return keyboard(rows)
 }
 
 func restoreBackupKeyboard(files []string) *InlineKeyboardMarkup {
@@ -211,4 +259,3 @@ func restoreBackupKeyboard(files []string) *InlineKeyboardMarkup {
 func keyboard(rows [][]InlineKeyboardButton) *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{InlineKeyboard: rows}
 }
-

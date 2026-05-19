@@ -127,7 +127,7 @@ func (a *App) restoreBackupCallback(cb *CallbackQuery) {
 	a.edit(
 		cb,
 		"♻️ База восстановлена из <code>"+esc(filepath.Base(files[index]))+"</code>.\n\nSafety-бекап: <code>"+esc(filepath.Base(safety))+"</code>",
-		adminKeyboard(),
+		maintenanceKeyboard(),
 	)
 }
 
@@ -184,4 +184,3 @@ func (a *App) edit(cb *CallbackQuery, text string, markup *InlineKeyboardMarkup)
 func (a *App) isAdmin(id int64) bool {
 	return a.cfg.AdminIDs[id]
 }
-

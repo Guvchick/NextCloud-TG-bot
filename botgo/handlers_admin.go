@@ -61,11 +61,19 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 	switch {
 	case data == "admin":
 		a.edit(cb, a.adminSummary(), adminKeyboard())
-	case data == "admin:search":
+	case data == "users:search":
 		a.states.Set(cb.From.ID, State{Kind: StateAdminSearch})
-		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", backAdminKeyboard())
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", usersMenuKeyboard())
 	case data == "stickers":
-		a.edit(cb, a.stickersText(), adminKeyboard())
+		a.edit(cb, a.stickersText(), stickersKeyboard(a.stickers))
+	case strings.HasPrefix(data, "sticker:event:"):
+		a.stickerEvent(cb)
+	case strings.HasPrefix(data, "sticker:set:"):
+		a.stickerSetFromButton(cb)
+	case strings.HasPrefix(data, "sticker:preview:"):
+		a.stickerPreview(cb)
+	case strings.HasPrefix(data, "sticker:clear:"):
+		a.stickerClear(cb)
 	case strings.HasPrefix(data, "users:"):
 		a.usersList(cb)
 	case strings.HasPrefix(data, "user:"):
@@ -121,7 +129,11 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 			_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "⚠️ Синхронизация не удалась: <code>"+esc(err.Error())+"</code>", nil)
 			return
 		}
-		a.edit(cb, fmt.Sprintf("🔄 <b>Синхронизация завершена</b>\n\nПроверено: <b>%d</b>\nУдалено из БД бота: <b>%d</b>", checked, removed), adminKeyboard())
+		a.edit(cb, fmt.Sprintf("🔄 <b>Синхронизация завершена</b>\n\nПроверено: <b>%d</b>\nУдалено из БД бота: <b>%d</b>", checked, removed), maintenanceKeyboard())
+	case data == "maintenance":
+		a.edit(cb, a.maintenanceText(), maintenanceKeyboard())
+	case data == "admincloud":
+		a.adminCloudCheck(cb)
 	case strings.HasPrefix(data, "backup"):
 		a.backupCallback(cb)
 	case strings.HasPrefix(data, "restore:"):
@@ -167,6 +179,11 @@ func (a *App) adminSummary() string {
 	return fmt.Sprintf("<b>🛠️ Админ-панель облака</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n👥 Всего пользователей: <b>%d</b>\n📝 Заявок: <b>%d</b>\n✅ Одобрено: <b>%d</b>\n❌ Отклонено: <b>%d</b>", total, requested, approved, rejected)
 }
 
+func (a *App) maintenanceText() string {
+	return "🔄 <b>Синхронизация и восстановление</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
+		"Здесь проверяется связь с облаком, синхронизируются пользователи и управляются сжатые бекапы PostgreSQL."
+}
+
 func (a *App) health(chatID int64) {
 	status := "✅ Nextcloud API доступен"
 	if err := a.nc.CheckConnection(); err != nil {
@@ -175,15 +192,35 @@ func (a *App) health(chatID int64) {
 	_, _ = a.tg.SendMessage(chatID, "<b>Проверка Nextcloud</b>\n\nПубличный URL: <code>"+esc(a.cfg.NextcloudURL)+"</code>\nВнутренний URL: <code>"+esc(a.cfg.NextcloudInternalURL)+"</code>\n\n"+status, nil)
 }
 
+func (a *App) adminCloudCheck(cb *CallbackQuery) {
+	status := "✅ API доступен"
+	if err := a.nc.CheckConnection(); err != nil {
+		status = "⚠️ API недоступен: <code>" + esc(err.Error()) + "</code>"
+	}
+	quota := ""
+	used, available, err := a.nc.GetQuota(a.cfg.NextcloudAdminUser, a.cfg.NextcloudAdminPassword)
+	if err != nil {
+		quota = "\n\n☁️ Квота админского аккаунта: <code>" + esc(err.Error()) + "</code>"
+	} else {
+		total := used + available
+		percent := 0.0
+		if total > 0 {
+			percent = float64(used) / float64(total) * 100
+		}
+		quota = fmt.Sprintf("\n\n☁️ Админский аккаунт: <code>%s</code>\nЗанято: <b>%s</b> / <b>%s</b>\n📊 <code>%s</code> %.1f%%", esc(a.cfg.NextcloudAdminUser), formatBytes(used), formatBytes(total), usageBar(used, available), percent)
+	}
+	a.edit(cb, "<b>☁️ Проверка моего клауда</b>\n\nПубличный URL: <code>"+esc(a.cfg.NextcloudURL)+"</code>\nВнутренний URL: <code>"+esc(a.cfg.NextcloudInternalURL)+"</code>\n\n"+status+quota, maintenanceKeyboard())
+}
+
 func (a *App) renderSearch(chatID int64, query string) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		_, _ = a.tg.SendMessage(chatID, "Введите Telegram ID или тег для поиска.", backAdminKeyboard())
+		_, _ = a.tg.SendMessage(chatID, "Введите Telegram ID или тег для поиска.", usersMenuKeyboard())
 		return
 	}
 	users, err := a.db.SearchUsers(query, 10)
 	if err != nil {
-		_, _ = a.tg.SendMessage(chatID, "⚠️ Поиск не удался: <code>"+esc(err.Error())+"</code>", adminKeyboard())
+		_, _ = a.tg.SendMessage(chatID, "⚠️ Поиск не удался: <code>"+esc(err.Error())+"</code>", usersMenuKeyboard())
 		return
 	}
 	text := fmt.Sprintf("🔎 <b>Поиск</b>: <code>%s</code>\n\n", esc(query))
@@ -196,63 +233,128 @@ func (a *App) renderSearch(chatID int64, query string) {
 }
 
 func (a *App) setStickerStart(msg *Message, parts []string) {
-	allowed := map[string]bool{
-		"welcome": true, "approved": true, "upload_ok": true, "error": true,
-		"support": true, "donate": true, "language": true, "password": true,
-	}
-	if len(parts) != 2 || !allowed[parts[1]] {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, "Используйте: <code>/setsticker welcome|approved|upload_ok|error|support|donate|language|password</code>", adminKeyboard())
+	if len(parts) != 2 || !stickerEventAllowed(parts[1]) {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Используйте: <code>/setsticker welcome</code> или настройте через кнопку ✨ Стикеры.", stickersKeyboard(a.stickers))
 		return
 	}
 	a.states.Set(msg.From.ID, State{Kind: StateSticker, Event: parts[1]})
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "Отправьте стикер для события <code>"+esc(parts[1])+"</code>.", backAdminKeyboard())
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "Отправьте стикер или custom emoji для события <code>"+esc(parts[1])+"</code>.\n\nРекомендуемый набор: "+esc(a.cfg.CustomEmojiPackURL), stickerEventKeyboard(parts[1], false))
 }
 
 func (a *App) saveSticker(msg *Message, st State) {
-	if msg.Sticker == nil || msg.Sticker.FileID == "" {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, "Нужно отправить именно стикер.", backAdminKeyboard())
+	kind := ""
+	id := ""
+	if msg.Sticker != nil && msg.Sticker.FileID != "" {
+		kind = StickerKindSticker
+		id = msg.Sticker.FileID
+	} else if customEmojiID := firstCustomEmojiID(msg); customEmojiID != "" {
+		kind = StickerKindCustomEmoji
+		id = customEmojiID
+	}
+	if id == "" {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Нужно отправить стикер или custom emoji.", stickerEventKeyboard(st.Event, false))
 		return
 	}
-	if err := a.db.SetSetting("sticker_"+st.Event, msg.Sticker.FileID); err != nil {
+	if err := a.stickers.Set(st.Event, kind, id); err != nil {
 		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось сохранить стикер: <code>"+esc(err.Error())+"</code>", adminKeyboard())
 		return
 	}
 	a.states.Clear(msg.From.ID)
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "✨ Стикер для <code>"+esc(st.Event)+"</code> сохранен. Если Telegram его отклонит, бот оставит базовый маркер "+eventMark(st.Event)+".", adminKeyboard())
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "✨ Оформление для <code>"+esc(st.Event)+"</code> сохранено в файл. Если Telegram его отклонит, бот оставит базовый маркер "+eventMark(st.Event)+".", stickerEventKeyboard(st.Event, true))
+	_ = a.previewSticker(msg.Chat.ID, st.Event)
 }
 
 func (a *App) stickersText() string {
-	settings, _ := a.db.ListSettings("sticker_")
-	line := func(event string, envValue string) string {
+	line := func(event string) string {
 		mode := "базовый"
-		if settings["sticker_"+event] != "" || envValue != "" {
-			mode = "кастомный"
+		if value, ok := a.stickers.Get(event); ok {
+			if value.Kind == StickerKindCustomEmoji {
+				mode = "custom emoji"
+			} else {
+				mode = "стикер"
+			}
 		}
 		return event + ": <b>" + mode + "</b> " + eventMark(event)
 	}
 	return "<b>✨ Стикеры</b>\n\n" +
-		"Если кастомный стикер не задан или Telegram его отклонит, бот оставит базовый маркер в тексте.\n\n" +
-		line("welcome", a.cfg.StickerWelcome) + "\n" +
-		line("approved", a.cfg.StickerApproved) + "\n" +
-		line("upload_ok", a.cfg.StickerUploadOK) + "\n" +
-		line("error", a.cfg.StickerError) + "\n" +
-		line("support", "") + "\n" +
-		line("donate", "") + "\n" +
-		line("language", "") + "\n" +
-		line("password", "") + "\n\n" +
-		"Команды настройки:\n" +
-		"<code>/setsticker welcome</code>\n" +
-		"<code>/setsticker approved</code>\n" +
-		"<code>/setsticker upload_ok</code>\n" +
-		"<code>/setsticker error</code>\n" +
-		"<code>/setsticker support</code>\n" +
-		"<code>/setsticker donate</code>\n" +
-		"<code>/setsticker language</code>\n" +
-		"<code>/setsticker password</code>"
+		"Хранение: <code>" + esc(a.cfg.StickerStoreFile) + "</code>\n" +
+		"Рекомендуемый набор emoji: " + esc(a.cfg.CustomEmojiPackURL) + "\n\n" +
+		line("welcome") + "\n" +
+		line("approved") + "\n" +
+		line("upload_ok") + "\n" +
+		line("error") + "\n" +
+		line("support") + "\n" +
+		line("donate") + "\n" +
+		line("language") + "\n" +
+		line("password") + "\n" +
+		line("premium") + "\n" +
+		line("backup") + "\n" +
+		line("sync")
+}
+
+func (a *App) stickerEvent(cb *CallbackQuery) {
+	event := strings.TrimPrefix(cb.Data, "sticker:event:")
+	if !stickerEventAllowed(event) {
+		a.tg.AnswerCallback(cb.ID, "Неизвестное событие", true)
+		return
+	}
+	value, ok := a.stickers.Get(event)
+	mode := "базовый emoji " + eventMark(event)
+	if ok {
+		mode = value.Kind
+	}
+	text := "✨ <b>Оформление события</b>\n\nСобытие: <code>" + esc(event) + "</code>\nТекущее: <b>" + esc(mode) + "</b>\n\nМожно поставить обычный Telegram-стикер или custom emoji из набора:\n" + esc(a.cfg.CustomEmojiPackURL)
+	a.edit(cb, text, stickerEventKeyboard(event, ok))
+}
+
+func (a *App) stickerSetFromButton(cb *CallbackQuery) {
+	event := strings.TrimPrefix(cb.Data, "sticker:set:")
+	if !stickerEventAllowed(event) {
+		a.tg.AnswerCallback(cb.ID, "Неизвестное событие", true)
+		return
+	}
+	a.states.Set(cb.From.ID, State{Kind: StateSticker, Event: event})
+	a.edit(cb, "➕ <b>Установка оформления</b>\n\nОтправьте следующим сообщением Telegram-стикер или custom emoji для события <code>"+esc(event)+"</code>.\n\nНабор: "+esc(a.cfg.CustomEmojiPackURL), stickerEventKeyboard(event, false))
+}
+
+func (a *App) stickerPreview(cb *CallbackQuery) {
+	event := strings.TrimPrefix(cb.Data, "sticker:preview:")
+	if err := a.previewSticker(cb.Message.Chat.ID, event); err != nil {
+		a.tg.AnswerCallback(cb.ID, "Нет сохраненного оформления", true)
+	}
+}
+
+func (a *App) previewSticker(chatID int64, event string) error {
+	value, ok := a.stickers.Get(event)
+	if !ok {
+		return errors.New("empty sticker")
+	}
+	if value.Kind == StickerKindSticker {
+		return a.tg.SendSticker(chatID, value.ID)
+	}
+	_, err := a.tg.SendMessage(chatID, "Предпросмотр "+esc(event)+": "+customEmojiHTML(value.ID, eventMark(event)), nil)
+	return err
+}
+
+func (a *App) stickerClear(cb *CallbackQuery) {
+	event := strings.TrimPrefix(cb.Data, "sticker:clear:")
+	if !stickerEventAllowed(event) {
+		a.tg.AnswerCallback(cb.ID, "Неизвестное событие", true)
+		return
+	}
+	if err := a.stickers.Clear(event); err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось очистить", true)
+		return
+	}
+	a.edit(cb, "🧹 Оформление для <code>"+esc(event)+"</code> очищено. Остался базовый маркер "+eventMark(event)+".", stickerEventKeyboard(event, false))
 }
 
 func (a *App) usersList(cb *CallbackQuery) {
 	parts := strings.Split(cb.Data, ":")
+	if len(parts) == 2 && parts[1] == "menu" {
+		a.edit(cb, "👥 <b>Пользователи</b>\n\nВыберите список или поиск.", usersMenuKeyboard())
+		return
+	}
 	if len(parts) != 3 {
 		return
 	}
@@ -474,4 +576,3 @@ func (a *App) deleteUser(cb *CallbackQuery) {
 	_, _ = a.tg.SendMessage(id, "Ваш beta-доступ к облаку был удален администратором.", nil)
 	a.edit(cb, fmt.Sprintf("🗑️ Пользователь <code>%d</code> удален.", id), adminKeyboard())
 }
-

@@ -48,6 +48,7 @@ type Message struct {
 	VideoNote         *TGFileInfo        `json:"video_note"`
 	Animation         *TGFileInfo        `json:"animation"`
 	Sticker           *TGSticker         `json:"sticker"`
+	Entities          []MessageEntity    `json:"entities"`
 	SuccessfulPayment *SuccessfulPayment `json:"successful_payment"`
 }
 
@@ -78,6 +79,13 @@ type TGPhoto struct {
 type TGSticker struct {
 	FileID string `json:"file_id"`
 	Emoji  string `json:"emoji"`
+}
+
+type MessageEntity struct {
+	Type          string `json:"type"`
+	Offset        int    `json:"offset"`
+	Length        int    `json:"length"`
+	CustomEmojiID string `json:"custom_emoji_id"`
 }
 
 type CallbackQuery struct {
@@ -295,4 +303,3 @@ func (tg *Telegram) SendDocument(chatID int64, path string, caption string) erro
 	}
 	return nil
 }
-

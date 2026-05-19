@@ -65,6 +65,7 @@ services:
     volumes:
       - ./backups:/app/backups
       - ./logs:/app/logs
+      - ./data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "${NEXTCLOUD_HOSTNAME:-cloud.example.com}:host-gateway"

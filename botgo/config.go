@@ -48,10 +48,10 @@ func loadConfig() Config {
 		BackupRetentionDays:          envInt("BACKUP_RETENTION_DAYS", 7),
 		AutoBackupIntervalHours:      envInt("AUTO_BACKUP_INTERVAL_HOURS", 24),
 		NextcloudSyncIntervalMinutes: envInt("NEXTCLOUD_SYNC_INTERVAL_MINUTES", 60),
-		StickerWelcome:               env("STICKER_WELCOME", ""),
-		StickerApproved:              env("STICKER_APPROVED", ""),
-		StickerUploadOK:              env("STICKER_UPLOAD_OK", ""),
-		StickerError:                 env("STICKER_ERROR", ""),
+		UploadWorkers:                envInt("UPLOAD_WORKERS", 3),
+		QuotaCacheSeconds:            envInt("QUOTA_CACHE_SECONDS", 45),
+		StickerStoreFile:             env("STICKER_STORE_FILE", "data/stickers.json"),
+		CustomEmojiPackURL:           env("CUSTOM_EMOJI_PACK_URL", "https://t.me/addemoji/CPT_Emoji"),
 	}
 }
 
@@ -131,4 +131,3 @@ func envIntList(name string, fallback []int) []int {
 	}
 	return values
 }
-

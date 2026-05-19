@@ -35,10 +35,10 @@ type Config struct {
 	BackupRetentionDays          int
 	AutoBackupIntervalHours      int
 	NextcloudSyncIntervalMinutes int
-	StickerWelcome               string
-	StickerApproved              string
-	StickerUploadOK              string
-	StickerError                 string
+	UploadWorkers                int
+	QuotaCacheSeconds            int
+	StickerStoreFile             string
+	CustomEmojiPackURL           string
 }
 
 type App struct {
@@ -49,6 +49,9 @@ type App struct {
 	platega   *Platega
 	states    *StateStore
 	uploads   *UploadQueue
+	batches   *UploadBatchManager
+	quota     *QuotaCache
+	stickers  *StickerStore
 	uploadSeq int64
 }
 
@@ -95,4 +98,3 @@ type State struct {
 	TargetID int64
 	Event    string
 }
-

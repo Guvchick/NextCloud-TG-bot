@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 )
 
 func (a *App) hasUpload(msg *Message) bool {
@@ -64,11 +65,9 @@ func (a *App) handleUpload(msg *Message) {
 		priority = 0
 	}
 	a.uploadSeq++
-	statusMsg, _ := a.tg.SendMessage(msg.Chat.ID, fmt.Sprintf("📥 <b>%s</b> (%s) добавлен в очередь.", esc(filename), formatBytes(size)), nil)
 	job := UploadJob{
 		TelegramID:      user.TelegramID,
 		ChatID:          msg.Chat.ID,
-		StatusMessageID: statusMsg.MessageID,
 		FileID:          fileID,
 		Filename:        filename,
 		FileSize:        size,
@@ -77,18 +76,16 @@ func (a *App) handleUpload(msg *Message) {
 		Priority:        priority,
 		Seq:             a.uploadSeq,
 	}
+	a.batches.add(a, job, 0)
 	position := a.uploads.Put(job)
-	text := fmt.Sprintf("📥 <b>%s</b> (%s) добавлен в очередь.\n\nМесто в очереди: <b>%d</b>.", esc(filename), formatBytes(size), position)
-	if isSupporter {
-		text += "\n\n⭐ У вас премиум-приоритет: загрузка пройдет раньше обычной очереди."
-	}
-	_ = a.tg.EditMessageText(msg.Chat.ID, statusMsg.MessageID, text, nil)
+	a.batches.updatePosition(a, job, position)
 	log.Printf("upload queued: telegram_id=%d filename=%s size=%d priority=%d", user.TelegramID, filename, size, priority)
 }
 
-func (a *App) uploadWorker() {
+func (a *App) uploadWorker(workerID int) {
 	for {
 		job := a.uploads.Get()
+		log.Printf("upload worker %d picked job: telegram_id=%d filename=%s", workerID, job.TelegramID, job.Filename)
 		a.processUpload(job)
 	}
 }
@@ -96,27 +93,37 @@ func (a *App) uploadWorker() {
 func (a *App) processUpload(job UploadJob) {
 	user, err := a.db.GetUser(job.TelegramID)
 	if err != nil || user == nil || user.Status != "approved" || user.IsDisabled == 1 || user.NCUserID == nil || user.NCPassword == nil {
-		_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, "Загрузка доступна только активным пользователям.", nil)
+		a.batches.set(a, job, "failed", "", "Загрузка доступна только активным пользователям.", "")
 		return
 	}
-	_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, fmt.Sprintf("📤 Загружаю <b>%s</b> (%s) в облако...", esc(job.Filename), formatBytes(job.FileSize)), nil)
+	a.batches.set(a, job, "downloading", "", "", "")
 	tmp, err := a.tg.DownloadFile(job.FileID)
 	if err != nil {
 		_ = a.sendEventSticker(job.ChatID, "error")
-		_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, fmt.Sprintf("⚠️ Telegram не дает боту скачать этот файл.\n\nЛимит для загрузки через бота: <b>%d MB</b>.\nЗагрузите большой файл напрямую через облако.", a.cfg.TelegramMaxDownloadMB), nil)
+		a.batches.set(a, job, "failed", "", fmt.Sprintf("Telegram не дает боту скачать файл. Лимит через бота: %d MB.", a.cfg.TelegramMaxDownloadMB), "")
 		log.Printf("telegram download failed: %v", err)
 		return
 	}
 	defer os.Remove(tmp)
+	a.batches.set(a, job, "uploading", "", "", "")
 	remote, err := a.nc.UploadFile(*user.NCUserID, *user.NCPassword, job.Filename, tmp)
 	if err != nil {
 		_ = a.sendEventSticker(job.ChatID, "error")
-		_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, "⚠️ Не удалось загрузить файл в облако: <code>"+esc(err.Error())+"</code>", nil)
+		a.batches.set(a, job, "failed", "", err.Error(), "")
 		log.Printf("nextcloud upload failed: telegram_id=%d filename=%s err=%v", job.TelegramID, job.Filename, err)
 		return
 	}
-	_ = a.sendEventSticker(job.ChatID, "upload_ok")
-	_ = a.tg.EditMessageText(job.ChatID, job.StatusMessageID, "✅ <b>Файл загружен</b>\n\nПуть: <code>"+esc(remote)+"</code>\n\n"+a.storageText(user), nil)
+	a.invalidateUserQuota(user)
+	a.batches.set(a, job, "done", remote, "", "")
+	if a.batches.allDone(job.TelegramID) {
+		footer := a.storageTextFresh(user)
+		if a.batches.hasFailures(job.TelegramID) {
+			_ = a.sendEventSticker(job.ChatID, "error")
+		} else {
+			_ = a.sendEventSticker(job.ChatID, "upload_ok")
+		}
+		a.batches.set(a, job, "done", remote, "", footer)
+	}
 	log.Printf("upload completed: telegram_id=%d remote=%s size=%d", job.TelegramID, remote, job.FileSize)
 }
 
@@ -146,9 +153,19 @@ func (a *App) storageText(user *User) string {
 	if user.NCUserID == nil || user.NCPassword == nil {
 		return "☁️ Занято: <b>неизвестно</b>"
 	}
-	used, available, err := a.nc.GetQuota(*user.NCUserID, *user.NCPassword)
+	return a.storageTextWithMode(user, false)
+}
+
+func (a *App) storageTextFresh(user *User) string {
+	return a.storageTextWithMode(user, true)
+}
+
+func (a *App) storageTextWithMode(user *User, fresh bool) string {
+	if user.NCUserID == nil || user.NCPassword == nil {
+		return "☁️ Занято: <b>неизвестно</b>"
+	}
+	used, available, err := a.userQuota(user, fresh)
 	if err != nil {
-		log.Printf("quota failed: telegram_id=%d err=%v", user.TelegramID, err)
 		return "☁️ Занято: <b>не удалось обновить</b>"
 	}
 	if used == 0 && available >= 0 {
@@ -167,23 +184,48 @@ func (a *App) syncNextcloudUsers() (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	jobs := make(chan User)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	checked := 0
 	removed := 0
-	for _, user := range users {
-		if user.NCUserID == nil {
-			continue
-		}
-		checked++
-		exists, err := a.nc.UserExists(*user.NCUserID)
-		if err != nil {
-			return checked, removed, err
-		}
-		if !exists {
-			_ = a.db.DeleteUser(user.TelegramID)
-			removed++
-			log.Printf("sync removed bot user: telegram_id=%d nc_user_id=%s", user.TelegramID, *user.NCUserID)
-		}
+	var firstErr error
+	workers := 5
+	if len(users) < workers {
+		workers = len(users)
 	}
-	return checked, removed, nil
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for user := range jobs {
+				if user.NCUserID == nil {
+					continue
+				}
+				exists, err := a.nc.UserExists(*user.NCUserID)
+				mu.Lock()
+				checked++
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				if err != nil {
+					continue
+				}
+				if !exists {
+					_ = a.db.DeleteUser(user.TelegramID)
+					mu.Lock()
+					removed++
+					mu.Unlock()
+					log.Printf("sync removed bot user: telegram_id=%d nc_user_id=%s", user.TelegramID, *user.NCUserID)
+				}
+			}
+		}()
+	}
+	for _, user := range users {
+		jobs <- user
+	}
+	close(jobs)
+	wg.Wait()
+	return checked, removed, firstErr
 }
-
