@@ -238,11 +238,11 @@ func (a *App) contentSetStart(cb *CallbackQuery) {
 	key := parts[3]
 	if kind == "message" {
 		a.states.Set(cb.From.ID, State{Kind: StateContentMessage, Event: key})
-		a.edit(cb, "💬 Отправьте новый текст сообщения.\n\nМожно использовать HTML, эмодзи и плейсхолдеры. Чтобы оставить переносы строк, отправляйте обычное многострочное сообщение.", contentEditKeyboard(kind, key))
+		a.edit(cb, "💬 Отправьте новый текст сообщения.\n\nМожно использовать HTML, обычные эмодзи, custom emoji и плейсхолдеры. Custom emoji сохранятся как <code>&lt;tg-emoji&gt;</code>.", contentEditKeyboard(kind, key))
 		return
 	}
 	a.states.Set(cb.From.ID, State{Kind: StateContentButton, Event: key})
-	a.edit(cb, "🔘 Отправьте новое название кнопки. Эмодзи можно.", contentEditKeyboard(kind, key))
+	a.edit(cb, "🔘 Отправьте новое название кнопки.\n\nОбычные эмодзи можно. Custom emoji в Telegram-кнопках не поддерживаются, бот сохранит только их обычный fallback-символ.", contentEditKeyboard(kind, key))
 }
 
 func (a *App) contentReset(cb *CallbackQuery) {
@@ -266,7 +266,7 @@ func (a *App) contentReset(cb *CallbackQuery) {
 }
 
 func (a *App) saveContentMessage(msg *Message, st State) {
-	text := strings.TrimSpace(msg.Text)
+	text := messageHTMLWithCustomEmoji(msg)
 	if text == "" {
 		_, _ = a.tg.SendMessage(msg.Chat.ID, "Текст не должен быть пустым.", contentEditKeyboard("message", st.Event))
 		return
@@ -284,6 +284,9 @@ func (a *App) saveContentButton(msg *Message, st State) {
 	if text == "" || len([]rune(text)) > 48 {
 		_, _ = a.tg.SendMessage(msg.Chat.ID, "Название кнопки должно быть от 1 до 48 символов.", contentEditKeyboard("button", st.Event))
 		return
+	}
+	if firstCustomEmojiID(msg) != "" {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "⚠️ Telegram не рендерит custom emoji в inline-кнопках. Сохраню обычный fallback-символ: <code>"+esc(text)+"</code>", contentEditKeyboard("button", st.Event))
 	}
 	if err := a.content.SetButton(st.Event, text); err != nil {
 		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось сохранить кнопку: <code>"+esc(err.Error())+"</code>", contentKeyboard())

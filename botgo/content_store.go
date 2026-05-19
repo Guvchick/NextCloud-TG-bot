@@ -199,3 +199,58 @@ func renderTemplate(text string, vars map[string]string) string {
 	}
 	return text
 }
+
+func messageHTMLWithCustomEmoji(msg *Message) string {
+	if msg == nil || len(msg.Entities) == 0 {
+		return strings.TrimSpace(msg.Text)
+	}
+	entities := make([]MessageEntity, 0, len(msg.Entities))
+	for _, entity := range msg.Entities {
+		if entity.Type == "custom_emoji" && entity.CustomEmojiID != "" && entity.Length > 0 {
+			entities = append(entities, entity)
+		}
+	}
+	if len(entities) == 0 {
+		return strings.TrimSpace(msg.Text)
+	}
+	sort.Slice(entities, func(i, j int) bool { return entities[i].Offset < entities[j].Offset })
+	var out strings.Builder
+	last := 0
+	for _, entity := range entities {
+		start := utf16OffsetToByteIndex(msg.Text, entity.Offset)
+		end := utf16OffsetToByteIndex(msg.Text, entity.Offset+entity.Length)
+		if start < last || start > len(msg.Text) || end < start || end > len(msg.Text) {
+			continue
+		}
+		out.WriteString(msg.Text[last:start])
+		fallback := msg.Text[start:end]
+		if strings.TrimSpace(fallback) == "" {
+			fallback = "✨"
+		}
+		out.WriteString(customEmojiHTML(entity.CustomEmojiID, fallback))
+		last = end
+	}
+	out.WriteString(msg.Text[last:])
+	return strings.TrimSpace(out.String())
+}
+
+func utf16OffsetToByteIndex(text string, target int) int {
+	if target <= 0 {
+		return 0
+	}
+	units := 0
+	for index, r := range text {
+		if units >= target {
+			return index
+		}
+		step := 1
+		if r > 0xFFFF {
+			step = 2
+		}
+		if units+step > target {
+			return index
+		}
+		units += step
+	}
+	return len(text)
+}
