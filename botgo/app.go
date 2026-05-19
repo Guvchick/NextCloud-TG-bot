@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -60,6 +61,29 @@ func main() {
 			client:     &http.Client{Timeout: 30 * time.Second},
 		}
 	}
+	if cfg.PallyEnabled && cfg.PallyToken != "" && cfg.PallyShopID != "" {
+		app.pally = &Pally{
+			token:   cfg.PallyToken,
+			shopID:  cfg.PallyShopID,
+			baseURL: cfg.PallyBaseURL,
+			client:  &http.Client{Timeout: 30 * time.Second},
+		}
+	}
+	if cfg.CryptoBotEnabled && cfg.CryptoBotToken != "" {
+		app.cryptoBot = &CryptoBotPay{
+			token:   cfg.CryptoBotToken,
+			baseURL: cfg.CryptoBotBaseURL,
+			client:  &http.Client{Timeout: 30 * time.Second},
+		}
+	}
+	if cfg.HeleketEnabled && cfg.HeleketMerchantID != "" && cfg.HeleketAPIKey != "" {
+		app.heleket = &Heleket{
+			merchantID: cfg.HeleketMerchantID,
+			apiKey:     cfg.HeleketAPIKey,
+			baseURL:    cfg.HeleketBaseURL,
+			client:     &http.Client{Timeout: 30 * time.Second},
+		}
+	}
 
 	if err := app.db.Init(); err != nil {
 		log.Fatalf("init db: %v", err)
@@ -73,6 +97,7 @@ func main() {
 	go app.autoBackupLoop()
 	go app.nextcloudSyncLoop()
 	go app.premiumExpirationLoop()
+	go app.startWebhookServer()
 	app.poll()
 }
 
@@ -85,6 +110,36 @@ func (a *App) logRuntimeHints() {
 	} else if a.cfg.TelegramMaxDownloadMB > 20 {
 		log.Printf("telegram public api warning: TELEGRAM_MAX_DOWNLOAD_MB=%d but TELEGRAM_LOCAL_MODE=false; public Bot API may still reject large files", a.cfg.TelegramMaxDownloadMB)
 	}
+	if a.cfg.PlategaEnabled && a.cfg.PlategaCallbackURL == "" {
+		log.Printf("platega warning: PLATEGA_CALLBACK_URL is empty; payments can still be checked manually, but automatic webhook fulfillment will not work")
+	}
+	if a.cfg.CryptoBotEnabled && strings.Trim(a.cfg.CryptoBotWebhookPath, "/") == "" {
+		log.Printf("cryptobot warning: CRYPTOBOT_WEBHOOK_PATH must be a secret path for webhook verification")
+	}
+	if a.cfg.HeleketEnabled && a.publicWebhookURL(a.cfg.HeleketWebhookPath) == "" {
+		log.Printf("heleket warning: set PUBLIC_WEBHOOK_BASE_URL or PLATEGA_CALLBACK_URL so bot can pass Heleket url_callback")
+	}
+}
+
+func (a *App) publicWebhookURL(path string) string {
+	base := strings.TrimSpace(a.cfg.PublicWebhookBaseURL)
+	if base == "" {
+		base = strings.TrimSpace(a.cfg.PlategaCallbackURL)
+	}
+	if base == "" {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	if path == "" {
+		return base
+	}
+	u.Path = path
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 func (a *App) poll() {
@@ -131,6 +186,10 @@ func (a *App) handleMessage(msg *Message) {
 	userID := msg.From.ID
 	if msg.SuccessfulPayment != nil {
 		a.handleSuccessfulPayment(msg)
+		return
+	}
+	if !a.isAdmin(userID) && a.maintenanceEnabled() {
+		_, _ = a.sendContent(msg.Chat.ID, "maintenance", nil, nil)
 		return
 	}
 	if st, ok := a.states.Get(userID); ok {

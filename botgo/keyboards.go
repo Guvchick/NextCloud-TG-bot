@@ -9,6 +9,8 @@ import (
 func adminKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
 		{{Text: "👥 Пользователи", CallbackData: "users:menu"}, {Text: "📝 Заявки", CallbackData: "users:requested:0"}},
+		{{Text: "📊 Статистика", CallbackData: "stats"}, {Text: "☁️ Админ cloud", CallbackData: "admincloud"}},
+		{{Text: "💾 Продажи", CallbackData: "commerce"}, {Text: "🎟 Промокоды", CallbackData: "promos"}},
 		{{Text: "📣 Рассылка", CallbackData: "broadcast"}, {Text: "🔄 Синхр./восстановление", CallbackData: "maintenance"}},
 		{{Text: "✏️ Тексты и кнопки", CallbackData: "content"}, {Text: "✨ Стикеры", CallbackData: "stickers"}},
 	})
@@ -31,15 +33,19 @@ func (a *App) accountKeyboard(lang string) *InlineKeyboardMarkup {
 	changePassword := a.content.Button("change_password_" + suffix)
 	support := a.content.Button("support_" + suffix)
 	donate := a.content.Button("donate_" + suffix)
+	buyStorage := a.content.Button("buy_storage_" + suffix)
+	promo := a.content.Button("promo_" + suffix)
+	info := a.content.Button("info_" + suffix)
 	language := a.content.Button("language_" + suffix)
 	rows := [][]InlineKeyboardButton{{{Text: cloud, URL: a.cfg.NextcloudURL}}, {{Text: changePassword, CallbackData: "account:change_password"}}}
+	rows = append(rows, []InlineKeyboardButton{{Text: buyStorage, CallbackData: "account:buy_storage"}, {Text: promo, CallbackData: "account:promo"}})
 	if a.cfg.EnableSupportBlock {
 		rows = append(rows, []InlineKeyboardButton{{Text: support, CallbackData: "account:support"}})
 	}
 	if a.cfg.EnableDonateBlock {
 		rows = append(rows, []InlineKeyboardButton{{Text: donate, CallbackData: "account:donate"}})
 	}
-	rows = append(rows, []InlineKeyboardButton{{Text: language, CallbackData: "account:language"}})
+	rows = append(rows, []InlineKeyboardButton{{Text: info, CallbackData: "account:info"}, {Text: language, CallbackData: "account:language"}})
 	return keyboard(rows)
 }
 
@@ -59,6 +65,19 @@ func donateKeyboard(cfg Config) *InlineKeyboardMarkup {
 	if cfg.PlategaVisible() {
 		rows = append(rows, []InlineKeyboardButton{{Text: "💳 Platega", CallbackData: "donate:platega"}})
 	}
+	providers := []InlineKeyboardButton{}
+	if cfg.PallyVisible() {
+		providers = append(providers, InlineKeyboardButton{Text: "💳 Pally", CallbackData: "donate:pally"})
+	}
+	if cfg.CryptoBotVisible() {
+		providers = append(providers, InlineKeyboardButton{Text: "🪙 CryptoBot", CallbackData: "donate:cryptobot"})
+	}
+	if len(providers) > 0 {
+		rows = append(rows, providers)
+	}
+	if cfg.HeleketVisible() {
+		rows = append(rows, []InlineKeyboardButton{{Text: "₿ Heleket", CallbackData: "donate:heleket"}})
+	}
 	if cfg.DonateURL != "" {
 		rows = append(rows, []InlineKeyboardButton{{Text: "💙 Донат", URL: cfg.DonateURL}})
 	}
@@ -68,6 +87,18 @@ func donateKeyboard(cfg Config) *InlineKeyboardMarkup {
 
 func (cfg Config) PlategaVisible() bool {
 	return cfg.PlategaEnabled && (cfg.PlategaPaymentURL() != "" || (cfg.PlategaMerchantID != "" && cfg.PlategaSecret != ""))
+}
+
+func (cfg Config) PallyVisible() bool {
+	return cfg.PallyEnabled && cfg.PallyToken != "" && cfg.PallyShopID != ""
+}
+
+func (cfg Config) CryptoBotVisible() bool {
+	return cfg.CryptoBotEnabled && cfg.CryptoBotToken != ""
+}
+
+func (cfg Config) HeleketVisible() bool {
+	return cfg.HeleketEnabled && cfg.HeleketMerchantID != "" && cfg.HeleketAPIKey != ""
 }
 
 func (cfg Config) PlategaPaymentURL() string {
@@ -116,12 +147,55 @@ func plategaKeyboard(cfg Config, apiEnabled bool) *InlineKeyboardMarkup {
 	return keyboard(rows)
 }
 
+func paymentAmountKeyboard(prefix string, amounts []int, back string) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{}
+	row := []InlineKeyboardButton{}
+	for _, amount := range amounts {
+		row = append(row, InlineKeyboardButton{Text: fmt.Sprintf("💳 %d RUB", amount), CallbackData: fmt.Sprintf("%s:%d", prefix, amount)})
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = []InlineKeyboardButton{}
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Назад", CallbackData: back}})
+	return keyboard(rows)
+}
+
 func plategaPaymentKeyboard(paymentURL, transactionID string) *InlineKeyboardMarkup {
+	return paymentLinkKeyboard(paymentURL, transactionID, "donate:platega")
+}
+
+func paymentLinkKeyboard(paymentURL, transactionID, back string) *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
 		{{Text: "💳 Оплатить", URL: paymentURL}},
 		{{Text: "🔎 Проверить оплату", CallbackData: "platega_check:" + transactionID}},
-		{{Text: "⬅️ Назад", CallbackData: "donate:platega"}},
+		{{Text: "⬅️ Назад", CallbackData: back}},
 	})
+}
+
+func buyStorageKeyboard(cfg Config) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{}
+	if cfg.PlategaVisible() {
+		rows = append(rows, []InlineKeyboardButton{{Text: "💳 Купить через Platega", CallbackData: "storage_buy:platega"}})
+	}
+	if cfg.PallyVisible() {
+		rows = append(rows, []InlineKeyboardButton{{Text: "💳 Купить через Pally", CallbackData: "storage_buy:pally"}})
+	}
+	if cfg.CryptoBotVisible() {
+		rows = append(rows, []InlineKeyboardButton{{Text: "🪙 Купить через CryptoBot", CallbackData: "storage_buy:cryptobot"}})
+	}
+	if cfg.HeleketVisible() {
+		rows = append(rows, []InlineKeyboardButton{{Text: "₿ Купить через Heleket", CallbackData: "storage_buy:heleket"}})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Назад", CallbackData: "account:home"}})
+	return keyboard(rows)
+}
+
+func promoApplyKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{{{Text: "⬅️ Назад", CallbackData: "account:home"}}})
 }
 
 func usersMenuKeyboard() *InlineKeyboardMarkup {
@@ -209,9 +283,28 @@ func maintenanceKeyboard() *InlineKeyboardMarkup {
 	})
 }
 
+func commerceKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "💾 GB в пакете", CallbackData: "set:storage_pack_gb"}, {Text: "💰 Цена RUB", CallbackData: "set:storage_pack_price_rub"}},
+		{{Text: "⭐ Скидка %", CallbackData: "set:premium_discount_percent"}, {Text: "📝 Описание премиума", CallbackData: "content:message:premium_info"}},
+		{{Text: "🎁 Триал on/off", CallbackData: "set:trial_enabled"}, {Text: "🎁 Квота триала", CallbackData: "set:trial_quota_gb"}},
+		{{Text: "⭐ Дней премиума триала", CallbackData: "set:trial_premium_days"}},
+		{{Text: "🛠️ Техработы on/off", CallbackData: "set:maintenance_enabled"}},
+		{{Text: "🛠️ В админку", CallbackData: "admin"}},
+	})
+}
+
+func promosKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "➕ Создать промокод", CallbackData: "promo:create"}},
+		{{Text: "🛠️ В админку", CallbackData: "admin"}},
+	})
+}
+
 func contentKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
 		{{Text: "💬 Сообщения", CallbackData: "content:messages"}, {Text: "🔘 Кнопки", CallbackData: "content:buttons"}},
+		{{Text: "🧾 Форматирование", CallbackData: "content:formatting"}},
 		{{Text: "🛠️ В админку", CallbackData: "admin"}},
 	})
 }
@@ -230,11 +323,15 @@ func contentListKeyboard(kind string) *InlineKeyboardMarkup {
 }
 
 func contentEditKeyboard(kind, key string) *InlineKeyboardMarkup {
-	return keyboard([][]InlineKeyboardButton{
+	rows := [][]InlineKeyboardButton{
 		{{Text: "✏️ Изменить", CallbackData: "content:set:" + kind + ":" + key}},
 		{{Text: "↩️ Сбросить", CallbackData: "content:reset:" + kind + ":" + key}},
-		{{Text: "⬅️ Назад", CallbackData: "content:" + mapBool(kind == "message", "messages", "buttons")}},
-	})
+	}
+	if kind == "message" {
+		rows = append(rows, []InlineKeyboardButton{{Text: "🖼 Фото", CallbackData: "content:photo:" + key}, {Text: "🧹 Убрать фото", CallbackData: "content:photoreset:" + key}})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Назад", CallbackData: "content:" + mapBool(kind == "message", "messages", "buttons")}})
+	return keyboard(rows)
 }
 
 func stickersKeyboard(store *StickerStore, packURL string) *InlineKeyboardMarkup {

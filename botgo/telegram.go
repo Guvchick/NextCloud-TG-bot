@@ -183,6 +183,19 @@ func (tg *Telegram) SendMessage(chatID int64, text string, markup *InlineKeyboar
 	return &msg, err
 }
 
+func (tg *Telegram) SendPhoto(chatID int64, photoID, caption string, markup *InlineKeyboardMarkup) (*Message, error) {
+	payload := map[string]any{"chat_id": chatID, "photo": photoID, "parse_mode": "HTML"}
+	if caption != "" {
+		payload["caption"] = caption
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	var msg Message
+	err := tg.call("sendPhoto", payload, &msg)
+	return &msg, err
+}
+
 func (tg *Telegram) SendSticker(chatID int64, stickerID string) error {
 	if strings.TrimSpace(stickerID) == "" {
 		return nil

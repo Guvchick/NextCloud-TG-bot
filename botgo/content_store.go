@@ -21,20 +21,25 @@ type ContentStore struct {
 	mu       sync.RWMutex
 	messages map[string]string
 	buttons  map[string]string
+	photos   map[string]string
 }
 
 type contentStoreFile struct {
 	Messages map[string]string `json:"messages"`
 	Buttons  map[string]string `json:"buttons"`
+	Photos   map[string]string `json:"photos"`
 }
 
 var contentMessages = []ContentItem{
 	{Key: "account_home", Title: "Главное сообщение пользователя", DefaultText: "☁️✨ <b>Ваше облако</b> ✨\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n{premium}🌐 Ссылка: <a href=\"{cloud_url}\">{cloud_url}</a>\n🆔 Логин: <code>{login}</code>\n🔐 Пароль: {password}\n💾 Квота: <b>{quota_gb} GB</b>\n\n{storage}\n\n📤 Отправьте файл в этот чат, и бот загрузит его в облако."},
-	{Key: "beta_sent", Title: "Заявка отправлена", DefaultText: "<b>Заявка отправлена ✨</b>\n\nАдминистратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов."},
-	{Key: "approved", Title: "Доступ одобрен", DefaultText: "✅ <b>Ваша заявка одобрена</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n🆔 Логин: <code>{login}</code>\n🔐 Пароль: <code>{password}</code>\n💾 Квота: <b>{quota_gb} GB</b>\n\n📤 Файлы можно отправлять прямо сюда: бот загрузит их в облако.\nПароль всегда виден в /start, там же его можно сменить."},
-	{Key: "rejected", Title: "Заявка отклонена", DefaultText: "Ваша заявка на beta-тест сейчас отклонена."},
+	{Key: "access_sent", Title: "Заявка отправлена", DefaultText: "<b>Заявка отправлена ✨</b>\n\nАдминистратор проверит доступ. Я сообщу, когда аккаунт будет готов."},
+	{Key: "approved", Title: "Доступ одобрен", DefaultText: "✅ <b>Доступ открыт</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n🆔 Логин: <code>{login}</code>\n🔐 Пароль: <code>{password}</code>\n💾 Квота: <b>{quota_gb} GB</b>\n\n📤 Файлы можно отправлять прямо сюда: бот загрузит их в облако.\nПароль всегда виден в /start, там же его можно сменить."},
+	{Key: "rejected", Title: "Заявка отклонена", DefaultText: "Ваша заявка сейчас отклонена."},
 	{Key: "support", Title: "Поддержка", DefaultText: "<b>💬 Поддержка</b>\n\n{support_contacts}"},
-	{Key: "donate", Title: "Донат", DefaultText: "<b>💙 Поддержать проект</b>\n\nМожно поддержать проект через Telegram Stars или внешнюю ссылку.\nВыберите способ поддержки."},
+	{Key: "donate", Title: "Донат", DefaultText: "<b>💙 Поддержать проект</b>\n\nМожно поддержать проект через Telegram Stars, Platega, Pally, CryptoBot, Heleket или внешнюю ссылку.\nВыберите способ поддержки."},
+	{Key: "premium_info", Title: "Описание премиума", DefaultText: "<b>⭐ Премиум</b>\n\nПремиум дает приоритет в очереди загрузок, отдельную иконку поддержавшего и скидку на докупку места."},
+	{Key: "info", Title: "Инфо и соглашения", DefaultText: "<b>ℹ️ Информация</b>\n\nПользовательское соглашение, политика хранения файлов и контакты поддержки настраиваются администратором в этой панели."},
+	{Key: "maintenance", Title: "Техработы", DefaultText: "<b>🛠️ Технические работы</b>\n\nСервис временно недоступен. Попробуйте позже."},
 	{Key: "password_changed", Title: "Пароль сменен", DefaultText: "✅ Пароль сменен.\n\nЛогин: <code>{login}</code>\nПароль: <code>{password}</code>"},
 	{Key: "upload_too_large", Title: "Файл больше лимита", DefaultText: "⚠️ Telegram не дает боту скачать этот файл: он больше <b>{limit_mb} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака."},
 }
@@ -44,16 +49,22 @@ var contentButtons = []ContentItem{
 	{Key: "change_password_ru", Title: "Кнопка Сменить пароль", DefaultText: "🔐 Сменить пароль"},
 	{Key: "support_ru", Title: "Кнопка Поддержка", DefaultText: "💬 Поддержка"},
 	{Key: "donate_ru", Title: "Кнопка Донат", DefaultText: "💙 Донат"},
+	{Key: "buy_storage_ru", Title: "Кнопка Докупить место", DefaultText: "💾 Докупить место"},
+	{Key: "promo_ru", Title: "Кнопка Промокод", DefaultText: "🎟 Промокод"},
+	{Key: "info_ru", Title: "Кнопка Инфо", DefaultText: "ℹ️ Инфо"},
 	{Key: "language_ru", Title: "Кнопка Язык", DefaultText: "🌐 Язык"},
 	{Key: "cloud_en", Title: "Button Open cloud", DefaultText: "☁️ Open cloud"},
 	{Key: "change_password_en", Title: "Button Change password", DefaultText: "🔐 Change password"},
 	{Key: "support_en", Title: "Button Support", DefaultText: "💬 Support"},
 	{Key: "donate_en", Title: "Button Donate", DefaultText: "💙 Donate"},
+	{Key: "buy_storage_en", Title: "Button Buy storage", DefaultText: "💾 Buy storage"},
+	{Key: "promo_en", Title: "Button Promo code", DefaultText: "🎟 Promo code"},
+	{Key: "info_en", Title: "Button Info", DefaultText: "ℹ️ Info"},
 	{Key: "language_en", Title: "Button Language", DefaultText: "🌐 Language"},
 }
 
 func NewContentStore(path string) *ContentStore {
-	return &ContentStore{path: path, messages: map[string]string{}, buttons: map[string]string{}}
+	return &ContentStore{path: path, messages: map[string]string{}, buttons: map[string]string{}, photos: map[string]string{}}
 }
 
 func (s *ContentStore) Load() error {
@@ -76,17 +87,23 @@ func (s *ContentStore) Load() error {
 	if payload.Buttons != nil {
 		s.buttons = payload.Buttons
 	}
+	if payload.Photos != nil {
+		s.photos = payload.Photos
+	}
 	return nil
 }
 
 func (s *ContentStore) Save() error {
 	s.mu.RLock()
-	payload := contentStoreFile{Messages: map[string]string{}, Buttons: map[string]string{}}
+	payload := contentStoreFile{Messages: map[string]string{}, Buttons: map[string]string{}, Photos: map[string]string{}}
 	for key, value := range s.messages {
 		payload.Messages[key] = value
 	}
 	for key, value := range s.buttons {
 		payload.Buttons[key] = value
+	}
+	for key, value := range s.photos {
+		payload.Photos[key] = value
 	}
 	s.mu.RUnlock()
 	raw, err := json.MarshalIndent(payload, "", "  ")
@@ -113,6 +130,12 @@ func (s *ContentStore) Button(key string) string {
 	return contentDefault(contentButtons, key)
 }
 
+func (s *ContentStore) Photo(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.photos[key])
+}
+
 func (s *ContentStore) SetMessage(key, value string) error {
 	if !contentKeyExists(contentMessages, key) {
 		return errors.New("unknown message key")
@@ -133,6 +156,16 @@ func (s *ContentStore) SetButton(key, value string) error {
 	return s.Save()
 }
 
+func (s *ContentStore) SetPhoto(key, fileID string) error {
+	if !contentKeyExists(contentMessages, key) {
+		return errors.New("unknown message key")
+	}
+	s.mu.Lock()
+	s.photos[key] = strings.TrimSpace(fileID)
+	s.mu.Unlock()
+	return s.Save()
+}
+
 func (s *ContentStore) ResetMessage(key string) error {
 	s.mu.Lock()
 	delete(s.messages, key)
@@ -143,6 +176,13 @@ func (s *ContentStore) ResetMessage(key string) error {
 func (s *ContentStore) ResetButton(key string) error {
 	s.mu.Lock()
 	delete(s.buttons, key)
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *ContentStore) ResetPhoto(key string) error {
+	s.mu.Lock()
+	delete(s.photos, key)
 	s.mu.Unlock()
 	return s.Save()
 }

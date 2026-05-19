@@ -70,6 +70,8 @@ services:
       - ./logs:/app/logs
       - ./data:/app/data
       - telegram_bot_api_data:/telegram-bot-api-data
+    ports:
+      - "${WEBHOOK_PORT:-8088}:8088"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "${NEXTCLOUD_HOSTNAME:-cloud.example.com}:host-gateway"

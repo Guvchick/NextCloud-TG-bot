@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -39,6 +40,10 @@ func (a *App) accountSupport(cb *CallbackQuery) {
 	}
 	_ = a.sendEventSticker(cb.Message.Chat.ID, "support")
 	contacts := strings.Join(lines[2:], "\n")
+	if a.content.Photo("support") != "" {
+		_, _ = a.sendContent(cb.Message.Chat.ID, "support", map[string]string{"support_contacts": contacts}, accountBackKeyboard())
+		return
+	}
 	a.edit(cb, a.content.Message("support", map[string]string{"support_contacts": contacts}), accountBackKeyboard())
 }
 
@@ -48,7 +53,27 @@ func (a *App) accountDonate(cb *CallbackQuery) {
 		return
 	}
 	_ = a.sendEventSticker(cb.Message.Chat.ID, "donate")
-	a.edit(cb, a.content.Message("donate", nil), donateKeyboard(a.cfg))
+	text := a.content.Message("donate", nil) + "\n\n" + a.content.Message("premium_info", nil)
+	if a.content.Photo("donate") != "" {
+		_, _ = a.sendContent(cb.Message.Chat.ID, "donate", nil, donateKeyboard(a.cfg))
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, a.content.Message("premium_info", nil), nil)
+		return
+	}
+	a.edit(cb, text, donateKeyboard(a.cfg))
+}
+
+func (a *App) accountBuyStorage(cb *CallbackQuery) {
+	user, err := a.db.GetUser(cb.From.ID)
+	if err != nil || user == nil || user.Status != "approved" {
+		a.tg.AnswerCallback(cb.ID, "Доступ не активен", true)
+		return
+	}
+	price := a.discountedStoragePrice(user)
+	text := fmt.Sprintf("💾 <b>Докупить место</b>\n\nПакет: <b>%d GB</b>\nЦена: <b>%d RUB</b>", a.storagePackGB(), price)
+	if isPremium(user) && a.premiumDiscount() > 0 {
+		text += fmt.Sprintf("\n⭐ Ваша премиум-скидка: <b>%d%%</b>", a.premiumDiscount())
+	}
+	a.edit(cb, text, buyStorageKeyboard(a.cfg))
 }
 
 func (a *App) donateCallback(cb *CallbackQuery) {
@@ -62,6 +87,30 @@ func (a *App) donateCallback(cb *CallbackQuery) {
 			return
 		}
 		a.edit(cb, "💳 <b>Platega</b>\n\nВыберите сумму в рублях. Бот создаст платежную ссылку Platega.", plategaKeyboard(a.cfg, a.platega != nil))
+		return
+	}
+	if cb.Data == "donate:pally" {
+		if a.pally == nil {
+			a.tg.AnswerCallback(cb.ID, "Pally не настроен", true)
+			return
+		}
+		a.edit(cb, "💳 <b>Pally</b>\n\nВыберите сумму в рублях.", paymentAmountKeyboard("pally", a.cfg.PlategaAmountsRUB, "account:donate"))
+		return
+	}
+	if cb.Data == "donate:cryptobot" {
+		if a.cryptoBot == nil {
+			a.tg.AnswerCallback(cb.ID, "CryptoBot не настроен", true)
+			return
+		}
+		a.edit(cb, "🪙 <b>CryptoBot</b>\n\nВыберите сумму в рублях.", paymentAmountKeyboard("cryptobot", a.cfg.PlategaAmountsRUB, "account:donate"))
+		return
+	}
+	if cb.Data == "donate:heleket" {
+		if a.heleket == nil {
+			a.tg.AnswerCallback(cb.ID, "Heleket не настроен", true)
+			return
+		}
+		a.edit(cb, "₿ <b>Heleket</b>\n\nВыберите сумму в рублях.", paymentAmountKeyboard("heleket", a.cfg.PlategaAmountsRUB, "account:donate"))
 		return
 	}
 	a.tg.AnswerCallback(cb.ID, "Недоступно", true)
@@ -101,6 +150,7 @@ func (a *App) plategaCreate(cb *CallbackQuery) {
 		payload,
 		a.cfg.PlategaReturnURL,
 		a.cfg.PlategaFailedURL,
+		a.cfg.PlategaCallbackURL,
 	)
 	if err != nil {
 		a.tg.AnswerCallback(cb.ID, "Не удалось создать платеж", true)
@@ -121,11 +171,91 @@ func (a *App) plategaCreate(cb *CallbackQuery) {
 	)
 }
 
-func (a *App) plategaCheck(cb *CallbackQuery) {
-	if a.platega == nil {
-		a.tg.AnswerCallback(cb.ID, "Platega не настроена", true)
+func (a *App) storageBuyCallback(cb *CallbackQuery) {
+	if !a.cfg.EnableDonateBlock {
+		a.tg.AnswerCallback(cb.ID, "Оплата отключена", true)
 		return
 	}
+	user, err := a.db.GetUser(cb.From.ID)
+	if err != nil || user == nil || user.Status != "approved" {
+		a.tg.AnswerCallback(cb.ID, "Доступ не активен", true)
+		return
+	}
+	gb := a.storagePackGB()
+	price := a.discountedStoragePrice(user)
+	payload := fmt.Sprintf("storage:%d:%d:%d", cb.From.ID, gb, price)
+	provider := strings.TrimPrefix(cb.Data, "storage_buy:")
+	payment, err := a.createExternalPayment(provider, price, fmt.Sprintf("Buy %d GB for Telegram %d", gb, cb.From.ID), payload)
+	if err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось создать платеж", true)
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать платеж: <code>"+esc(err.Error())+"</code>", nil)
+		return
+	}
+	transactionID := fmt.Sprint(payment["transactionId"])
+	paymentURL := fmt.Sprint(payment["url"])
+	status := strings.ToUpper(fmt.Sprint(payment["status"]))
+	if status == "" || status == "<nil>" {
+		status = "PENDING"
+	}
+	_ = a.db.CreatePayment(transactionID, cb.From.ID, provider, price, "RUB", status, &paymentURL, &payload)
+	a.edit(cb, fmt.Sprintf("💾 <b>Покупка места</b>\n\nПакет: <b>%d GB</b>\nСумма: <b>%d RUB</b>\nID: <code>%s</code>", gb, price, esc(transactionID)), paymentLinkKeyboard(paymentURL, transactionID, "account:buy_storage"))
+}
+
+func (a *App) externalDonateCreate(cb *CallbackQuery, provider string) {
+	if !a.cfg.EnableDonateBlock {
+		a.tg.AnswerCallback(cb.ID, "Донат отключен", true)
+		return
+	}
+	amount := int(parseLastInt(cb.Data))
+	if !containsInt(a.cfg.PlategaAmountsRUB, amount) {
+		a.tg.AnswerCallback(cb.ID, "Недоступная сумма", true)
+		return
+	}
+	payload := fmt.Sprintf("%s_donate:%d:%d", provider, cb.From.ID, amount)
+	payment, err := a.createExternalPayment(provider, amount, fmt.Sprintf("Cloud bot support from Telegram %d", cb.From.ID), payload)
+	if err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось создать платеж", true)
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось создать платеж: <code>"+esc(err.Error())+"</code>", nil)
+		return
+	}
+	transactionID := fmt.Sprint(payment["transactionId"])
+	paymentURL := fmt.Sprint(payment["url"])
+	status := strings.ToUpper(fmt.Sprint(payment["status"]))
+	if status == "" || status == "<nil>" {
+		status = "PENDING"
+	}
+	_ = a.db.CreatePayment(transactionID, cb.From.ID, provider, amount, "RUB", status, &paymentURL, &payload)
+	a.edit(cb, fmt.Sprintf("💳 <b>%s</b>\n\nПлатеж создан.\nID: <code>%s</code>\nСумма: <b>%d RUB</b>", esc(provider), esc(transactionID), amount), paymentLinkKeyboard(paymentURL, transactionID, "donate:"+provider))
+}
+
+func (a *App) createExternalPayment(provider string, amount int, description, payload string) (map[string]any, error) {
+	switch provider {
+	case "platega":
+		if a.platega == nil {
+			return nil, errors.New("Platega is not configured")
+		}
+		return a.platega.CreatePayment(amount, description, payload, a.cfg.PlategaReturnURL, a.cfg.PlategaFailedURL, a.cfg.PlategaCallbackURL)
+	case "pally":
+		if a.pally == nil {
+			return nil, errors.New("Pally is not configured")
+		}
+		return a.pally.CreateBill(amount, description, payload)
+	case "cryptobot":
+		if a.cryptoBot == nil {
+			return nil, errors.New("CryptoBot is not configured")
+		}
+		return a.cryptoBot.CreateInvoice(amount, description, payload, a.cfg.PlategaReturnURL)
+	case "heleket":
+		if a.heleket == nil {
+			return nil, errors.New("Heleket is not configured")
+		}
+		return a.heleket.CreatePayment(amount, a.cfg.HeleketCurrency, a.cfg.HeleketToCurrency, a.publicWebhookURL(a.cfg.HeleketWebhookPath), a.cfg.PlategaReturnURL, payload)
+	default:
+		return nil, errors.New("unknown payment provider")
+	}
+}
+
+func (a *App) externalPaymentCheck(cb *CallbackQuery) {
 	transactionID := strings.TrimPrefix(cb.Data, "platega_check:")
 	storedPayment, err := a.db.GetPayment(transactionID)
 	if err != nil || storedPayment == nil {
@@ -136,18 +266,23 @@ func (a *App) plategaCheck(cb *CallbackQuery) {
 		a.tg.AnswerCallback(cb.ID, "Нет доступа", true)
 		return
 	}
-	payment, err := a.platega.Transaction(transactionID)
-	if err != nil {
-		a.tg.AnswerCallback(cb.ID, "Не удалось проверить платеж", true)
-		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось проверить платеж Platega: <code>"+esc(err.Error())+"</code>", nil)
+	if storedPayment.Status == "FULFILLED" {
+		a.tg.AnswerCallback(cb.ID, "Уже выдано", false)
 		return
 	}
-	status := strings.ToUpper(fmt.Sprint(payment["status"]))
+	status, err := a.checkExternalPayment(storedPayment)
+	if err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось проверить платеж", true)
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось проверить платеж: <code>"+esc(err.Error())+"</code>", nil)
+		return
+	}
 	_ = a.db.UpdatePaymentStatus(transactionID, status)
 	if status == "CONFIRMED" {
-		until := time.Now().UTC().Add(time.Duration(a.cfg.PremiumDays) * 24 * time.Hour).Format(time.RFC3339)
-		_ = a.db.SetSupporter(storedPayment.TelegramID, true, &until)
-		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "⭐ Оплата подтверждена! Премиум-иконка активирована.", a.accountKeyboard("ru"))
+		if err := a.fulfillPayment(transactionID); err != nil {
+			a.tg.AnswerCallback(cb.ID, "Платеж подтвержден, но выдача не удалась", true)
+			_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "⚠️ Платеж подтвержден, но выдача не удалась: <code>"+esc(err.Error())+"</code>", nil)
+			return
+		}
 		a.tg.AnswerCallback(cb.ID, "Оплачено", false)
 		return
 	}
@@ -156,6 +291,49 @@ func (a *App) plategaCheck(cb *CallbackQuery) {
 		return
 	}
 	a.tg.AnswerCallback(cb.ID, "Платеж пока не подтвержден. Статус: "+status, true)
+}
+
+func (a *App) checkExternalPayment(payment *Payment) (string, error) {
+	switch payment.Provider {
+	case "platega":
+		if a.platega == nil {
+			return "", errors.New("Platega is not configured")
+		}
+		data, err := a.platega.Transaction(payment.TransactionID)
+		if err != nil {
+			return "", err
+		}
+		return strings.ToUpper(fmt.Sprint(data["status"])), nil
+	case "cryptobot":
+		if a.cryptoBot == nil {
+			return "", errors.New("CryptoBot is not configured")
+		}
+		data, err := a.cryptoBot.Invoice(payment.TransactionID)
+		if err != nil {
+			return "", err
+		}
+		if strings.ToLower(firstMapString(data, "status")) == "paid" {
+			return "CONFIRMED", nil
+		}
+		return strings.ToUpper(firstMapString(data, "status")), nil
+	case "heleket":
+		if a.heleket == nil {
+			return "", errors.New("Heleket is not configured")
+		}
+		data, err := a.heleket.PaymentInfo(payment.TransactionID)
+		if err != nil {
+			return "", err
+		}
+		status := strings.ToLower(firstMapString(data, "status"))
+		if status == "paid" || status == "paid_over" {
+			return "CONFIRMED", nil
+		}
+		return strings.ToUpper(status), nil
+	case "pally":
+		return payment.Status, nil
+	default:
+		return "", errors.New("unknown payment provider")
+	}
 }
 
 func (a *App) setLanguage(cb *CallbackQuery) {

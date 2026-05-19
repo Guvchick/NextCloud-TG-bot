@@ -33,27 +33,35 @@ func (a *App) start(msg *Message) {
 		return
 	}
 	if user.Status == "rejected" {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("rejected", nil), nil)
+		_, _ = a.sendContent(msg.Chat.ID, "rejected", nil, nil)
 		return
 	}
-	_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("beta_sent", nil), nil)
+	_, _ = a.sendContent(msg.Chat.ID, "access_sent", nil, nil)
 	for adminID := range a.cfg.AdminIDs {
-		text := "<b>Новая заявка на beta-тест</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
+		text := "<b>Новая заявка на доступ</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
 			"Пользователь: " + displayName(user) + "\n" +
 			fmt.Sprintf("Telegram ID: <code>%d</code>", user.TelegramID)
 		_, _ = a.tg.SendMessage(adminID, text, requestReviewKeyboard(user.TelegramID))
 	}
-	log.Printf("beta request: telegram_id=%d username=%s", msg.From.ID, msg.From.Username)
+	log.Printf("access request: telegram_id=%d username=%s", msg.From.ID, msg.From.Username)
 }
 
 func (a *App) handleCallback(cb *CallbackQuery) {
 	data := cb.Data
+	if !a.isAdmin(cb.From.ID) && a.maintenanceEnabled() {
+		a.tg.AnswerCallback(cb.ID, "Идут технические работы", true)
+		return
+	}
 	if !a.isAdmin(cb.From.ID) &&
 		!strings.HasPrefix(data, "account:") &&
 		!strings.HasPrefix(data, "lang:") &&
 		!strings.HasPrefix(data, "donate:") &&
+		!strings.HasPrefix(data, "storage_buy:") &&
 		!strings.HasPrefix(data, "stars:") &&
 		!strings.HasPrefix(data, "platega:") &&
+		!strings.HasPrefix(data, "pally:") &&
+		!strings.HasPrefix(data, "cryptobot:") &&
+		!strings.HasPrefix(data, "heleket:") &&
 		!strings.HasPrefix(data, "platega_check:") {
 		a.tg.AnswerCallback(cb.ID, "Нет доступа", true)
 		return
@@ -61,6 +69,19 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 	switch {
 	case data == "admin":
 		a.edit(cb, a.adminSummary(), adminKeyboard())
+	case data == "stats":
+		a.edit(cb, a.statsText(), backAdminKeyboard())
+	case data == "commerce":
+		a.edit(cb, a.commerceText(), commerceKeyboard())
+	case strings.HasPrefix(data, "set:"):
+		key := strings.TrimPrefix(data, "set:")
+		a.states.Set(cb.From.ID, State{Kind: StateSetting, Event: key})
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Введите новое значение для <code>"+esc(key)+"</code>.", backAdminKeyboard())
+	case data == "promos":
+		a.edit(cb, a.promoListText(), promosKeyboard())
+	case data == "promo:create":
+		a.states.Set(cb.From.ID, State{Kind: StatePromoCreate})
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Отправьте промокод в формате:\n<code>CODE GB PREMIUM_DAYS MAX_USES [YYYY-MM-DD]</code>\n\nПример: <code>HELLO 20 14 100 2026-12-31</code>", promosKeyboard())
 	case data == "users:search":
 		a.states.Set(cb.From.ID, State{Kind: StateAdminSearch})
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", usersMenuKeyboard())
@@ -72,6 +93,8 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.edit(cb, "💬 <b>Сообщения</b>\n\nВыберите текст, который нужно изменить.", contentListKeyboard("message"))
 	case data == "content:buttons":
 		a.edit(cb, "🔘 <b>Кнопки</b>\n\nВыберите кнопку, которую нужно переименовать.", contentListKeyboard("button"))
+	case data == "content:formatting":
+		a.edit(cb, formattingText(), contentKeyboard())
 	case strings.HasPrefix(data, "content:message:"):
 		a.contentItem(cb, "message", strings.TrimPrefix(data, "content:message:"))
 	case strings.HasPrefix(data, "content:button:"):
@@ -80,6 +103,14 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.contentSetStart(cb)
 	case strings.HasPrefix(data, "content:reset:"):
 		a.contentReset(cb)
+	case strings.HasPrefix(data, "content:photo:"):
+		key := strings.TrimPrefix(data, "content:photo:")
+		a.states.Set(cb.From.ID, State{Kind: StateContentPhoto, Event: key})
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Отправьте фото для сообщения <code>"+esc(key)+"</code>.", contentEditKeyboard("message", key))
+	case strings.HasPrefix(data, "content:photoreset:"):
+		key := strings.TrimPrefix(data, "content:photoreset:")
+		_ = a.content.ResetPhoto(key)
+		a.contentItem(cb, "message", key)
 	case strings.HasPrefix(data, "sticker:event:"):
 		a.stickerEvent(cb)
 	case strings.HasPrefix(data, "sticker:set:"):
@@ -121,6 +152,18 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.accountSupport(cb)
 	case data == "account:donate":
 		a.accountDonate(cb)
+	case data == "account:buy_storage":
+		a.accountBuyStorage(cb)
+	case data == "account:promo":
+		a.states.Set(cb.From.ID, State{Kind: StatePromoApply})
+		a.edit(cb, "🎟 <b>Промокод</b>\n\nОтправьте промокод следующим сообщением.", promoApplyKeyboard())
+	case data == "account:info":
+		_ = a.sendEventSticker(cb.Message.Chat.ID, "info")
+		if a.content.Photo("info") != "" {
+			_, _ = a.sendContent(cb.Message.Chat.ID, "info", nil, accountBackKeyboard())
+			break
+		}
+		a.edit(cb, a.content.Message("info", nil), accountBackKeyboard())
 	case data == "account:language":
 		a.edit(cb, "<b>🌐 Выберите язык</b>", languageKeyboard())
 	case data == "account:change_password":
@@ -130,12 +173,20 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.setLanguage(cb)
 	case strings.HasPrefix(data, "donate:"):
 		a.donateCallback(cb)
+	case strings.HasPrefix(data, "storage_buy:"):
+		a.storageBuyCallback(cb)
 	case strings.HasPrefix(data, "stars:"):
 		a.starsDonate(cb)
 	case strings.HasPrefix(data, "platega:"):
 		a.plategaCreate(cb)
+	case strings.HasPrefix(data, "pally:"):
+		a.externalDonateCreate(cb, "pally")
+	case strings.HasPrefix(data, "cryptobot:"):
+		a.externalDonateCreate(cb, "cryptobot")
+	case strings.HasPrefix(data, "heleket:"):
+		a.externalDonateCreate(cb, "heleket")
 	case strings.HasPrefix(data, "platega_check:"):
-		a.plategaCheck(cb)
+		a.externalPaymentCheck(cb)
 	case data == "sync":
 		checked, removed, err := a.syncNextcloudUsers()
 		if err != nil {
@@ -176,6 +227,14 @@ func (a *App) handleStateMessage(msg *Message, st State) {
 		a.saveContentMessage(msg, st)
 	case StateContentButton:
 		a.saveContentButton(msg, st)
+	case StateContentPhoto:
+		a.saveContentPhoto(msg, st)
+	case StatePromoApply:
+		a.applyPromoMessage(msg)
+	case StatePromoCreate:
+		a.createPromoMessage(msg)
+	case StateSetting:
+		a.saveSettingMessage(msg, st)
 	case StateQuotaCustom:
 		amount, err := strconv.Atoi(strings.TrimSpace(msg.Text))
 		if err != nil || amount <= 0 {
@@ -225,7 +284,11 @@ func (a *App) contentItem(cb *CallbackQuery, kind, key string) {
 		}
 		value = a.content.Button(key)
 	}
-	text := "✏️ <b>" + esc(contentTitle(items, key)) + "</b>\n\nКлюч: <code>" + esc(key) + "</code>\n\nТекущее значение:\n<code>" + esc(value) + "</code>"
+	photoLine := ""
+	if kind == "message" {
+		photoLine = "\nФото: <b>" + mapBool(a.content.Photo(key) != "", "задано", "нет") + "</b>\n"
+	}
+	text := "✏️ <b>" + esc(contentTitle(items, key)) + "</b>\n\nКлюч: <code>" + esc(key) + "</code>" + photoLine + "\nТекущее значение:\n<code>" + esc(value) + "</code>"
 	a.edit(cb, text, contentEditKeyboard(kind, key))
 }
 
@@ -549,26 +612,32 @@ func (a *App) approveUser(cb *CallbackQuery) {
 	}
 	ncUserID := strconv.FormatInt(id, 10)
 	password := generatePassword(18)
-	if err := a.nc.EnsureUser(ncUserID, password, a.cfg.DefaultQuotaGB); err != nil {
+	quota := a.approvalQuotaGB()
+	if err := a.nc.EnsureUser(ncUserID, password, quota); err != nil {
 		a.tg.AnswerCallback(cb.ID, "Ошибка Nextcloud", true)
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "Не удалось выдать доступ: <code>"+esc(err.Error())+"</code>", nil)
 		return
 	}
-	if err := a.db.ApproveUser(id, ncUserID, password, a.cfg.DefaultQuotaGB); err != nil {
+	if err := a.db.ApproveUser(id, ncUserID, password, quota); err != nil {
 		a.tg.AnswerCallback(cb.ID, "Ошибка базы", true)
 		return
 	}
+	if a.trialEnabled() && a.trialPremiumDays() > 0 {
+		until := time.Now().UTC().Add(time.Duration(a.trialPremiumDays()) * 24 * time.Hour).Format(time.RFC3339)
+		_ = a.db.SetSupporter(id, true, &until)
+	}
 	approved, _ := a.db.GetUser(id)
 	_ = a.sendEventSticker(id, "approved")
-	_, _ = a.tg.SendMessage(id,
-		a.content.Message("approved", map[string]string{
+	_, _ = a.sendContent(id,
+		"approved",
+		map[string]string{
 			"login":    esc(ncUserID),
 			"password": esc(password),
-			"quota_gb": strconv.Itoa(a.cfg.DefaultQuotaGB),
-		}),
+			"quota_gb": strconv.Itoa(quota),
+		},
 		a.accountKeyboard(langOf(approved)),
 	)
-	a.edit(cb, fmt.Sprintf("✅ Доступ выдан пользователю <code>%d</code>: %d GB.", id, a.cfg.DefaultQuotaGB), adminKeyboard())
+	a.edit(cb, fmt.Sprintf("✅ Доступ выдан пользователю <code>%d</code>: %d GB.", id, quota), adminKeyboard())
 	log.Printf("user approved: telegram_id=%d nc_user_id=%s", id, ncUserID)
 }
 
@@ -576,7 +645,7 @@ func (a *App) rejectUser(cb *CallbackQuery) {
 	id := parseLastInt(cb.Data)
 	user, _ := a.db.GetUser(id)
 	_ = a.db.RejectUser(id)
-	_, _ = a.tg.SendMessage(id, a.content.Message("rejected", nil), nil)
+	_, _ = a.sendContent(id, "rejected", nil, nil)
 	a.edit(cb, fmt.Sprintf("❌ Заявка пользователя <code>%d</code> отклонена.", id), adminKeyboard())
 	log.Printf("user rejected: telegram_id=%d user=%v", id, user != nil)
 }
@@ -686,6 +755,6 @@ func (a *App) deleteUser(cb *CallbackQuery) {
 		}
 	}
 	_ = a.db.DeleteUser(id)
-	_, _ = a.tg.SendMessage(id, "Ваш beta-доступ к облаку был удален администратором.", nil)
+	_, _ = a.tg.SendMessage(id, "Ваш доступ к облаку был удален администратором.", nil)
 	a.edit(cb, fmt.Sprintf("🗑️ Пользователь <code>%d</code> удален.", id), adminKeyboard())
 }

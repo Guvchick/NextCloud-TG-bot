@@ -188,6 +188,31 @@ func (db *DB) SetSetting(key, value string) error {
 	return db.setSetting(context.Background(), key, value)
 }
 
+func (db *DB) Setting(key, fallback string) string {
+	value, err := db.GetSetting(key)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func (db *DB) SettingInt(key string, fallback int) int {
+	raw := db.Setting(key, "")
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func (db *DB) SettingBool(key string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(db.Setting(key, "")))
+	if raw == "" {
+		return fallback
+	}
+	return raw == "1" || raw == "true" || raw == "yes" || raw == "on" || raw == "да"
+}
+
 func (db *DB) ListSettings(prefix string) (map[string]string, error) {
 	var prefixPtr *string
 	if prefix != "" {
@@ -248,9 +273,26 @@ func (db *DB) initSchema(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS promo_codes (
+			code TEXT PRIMARY KEY,
+			quota_gb INTEGER NOT NULL DEFAULT 0 CHECK (quota_gb >= 0),
+			premium_days INTEGER NOT NULL DEFAULT 0 CHECK (premium_days >= 0),
+			max_uses INTEGER NOT NULL DEFAULT 0 CHECK (max_uses >= 0),
+			used_count INTEGER NOT NULL DEFAULT 0 CHECK (used_count >= 0),
+			is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+			created_at TEXT NOT NULL,
+			expires_at TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS promo_uses (
+			code TEXT NOT NULL REFERENCES promo_codes(code) ON DELETE CASCADE,
+			telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+			used_at TEXT NOT NULL,
+			PRIMARY KEY (code, telegram_id)
+		)`,
 		`CREATE INDEX IF NOT EXISTS users_status_created_idx ON users (status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS users_username_idx ON users (lower(username))`,
 		`CREATE INDEX IF NOT EXISTS payments_telegram_id_idx ON payments (telegram_id)`,
+		`CREATE INDEX IF NOT EXISTS promo_uses_telegram_id_idx ON promo_uses (telegram_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := db.db.ExecContext(ctx, q); err != nil {
@@ -262,6 +304,10 @@ func (db *DB) initSchema(ctx context.Context) error {
 		{"users", "language", "TEXT NOT NULL DEFAULT 'ru'"},
 		{"users", "is_supporter", "INTEGER NOT NULL DEFAULT 0"},
 		{"users", "supporter_until", "TEXT"},
+		{"payments", "payment_url", "TEXT"},
+		{"payments", "payload", "TEXT"},
+		{"payments", "created_at", "TEXT NOT NULL DEFAULT ''"},
+		{"payments", "updated_at", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := db.ensureColumn(ctx, col.table, col.name, col.typ); err != nil {
 			return err
@@ -480,15 +526,107 @@ func (db *DB) createPayment(ctx context.Context, transactionID string, telegramI
 }
 
 func (db *DB) getPayment(ctx context.Context, id string) (*Payment, error) {
-	row := db.db.QueryRowContext(ctx, pg(`SELECT transaction_id, telegram_id, provider, amount, currency, status FROM payments WHERE transaction_id = ?`), id)
+	row := db.db.QueryRowContext(ctx, pg(`SELECT transaction_id, telegram_id, provider, amount, currency, status, payment_url, payload, created_at, updated_at FROM payments WHERE transaction_id = ?`), id)
 	var p Payment
-	if err := row.Scan(&p.TransactionID, &p.TelegramID, &p.Provider, &p.Amount, &p.Currency, &p.Status); err != nil {
+	if err := row.Scan(&p.TransactionID, &p.TelegramID, &p.Provider, &p.Amount, &p.Currency, &p.Status, &p.PaymentURL, &p.Payload, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
 	return &p, nil
+}
+
+func (db *DB) Stats() (*BotStats, error) {
+	ctx := context.Background()
+	stats := &BotStats{}
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&stats.UsersTotal)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE status = 'requested'").Scan(&stats.UsersRequested)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE status = 'approved'").Scan(&stats.UsersApproved)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE status = 'rejected'").Scan(&stats.UsersRejected)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE is_disabled = 1").Scan(&stats.UsersDisabled)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE is_supporter = 1 AND supporter_until IS NOT NULL AND supporter_until > $1", now()).Scan(&stats.SupportersActive)
+	_ = db.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(quota_gb), 0) FROM users WHERE status = 'approved'").Scan(&stats.QuotaTotalGB)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM payments").Scan(&stats.PaymentsTotal)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM payments WHERE status IN ('CONFIRMED', 'FULFILLED')").Scan(&stats.PaymentsConfirmed)
+	_ = db.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status IN ('CONFIRMED', 'FULFILLED') AND currency = 'RUB'").Scan(&stats.PaymentsRub)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM promo_codes").Scan(&stats.PromoCodesTotal)
+	_ = db.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM promo_uses").Scan(&stats.PromoUsesTotal)
+	return stats, nil
+}
+
+func (db *DB) CreatePromo(code string, quotaGB, premiumDays, maxUses int, expiresAt *string) error {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return errors.New("empty promo code")
+	}
+	return db.exec(context.Background(), `INSERT INTO promo_codes (code, quota_gb, premium_days, max_uses, used_count, is_active, created_at, expires_at)
+		VALUES (?, ?, ?, ?, 0, 1, ?, ?)
+		ON CONFLICT(code) DO UPDATE SET quota_gb = excluded.quota_gb, premium_days = excluded.premium_days, max_uses = excluded.max_uses, is_active = 1, expires_at = excluded.expires_at`,
+		code, quotaGB, premiumDays, maxUses, now(), expiresAt)
+}
+
+func (db *DB) ListPromos(limit int) ([]PromoCode, error) {
+	rows, err := db.db.QueryContext(context.Background(), pg(`SELECT code, quota_gb, premium_days, max_uses, used_count, is_active, created_at, expires_at FROM promo_codes ORDER BY created_at DESC LIMIT ?`), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var promos []PromoCode
+	for rows.Next() {
+		var p PromoCode
+		if err := rows.Scan(&p.Code, &p.QuotaGB, &p.PremiumDays, &p.MaxUses, &p.UsedCount, &p.IsActive, &p.CreatedAt, &p.ExpiresAt); err != nil {
+			return nil, err
+		}
+		promos = append(promos, p)
+	}
+	return promos, rows.Err()
+}
+
+func (db *DB) ApplyPromo(code string, user *User) (*PromoCode, error) {
+	if user == nil {
+		return nil, errors.New("user not found")
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	tx, err := db.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	row := tx.QueryRow(pg(`SELECT code, quota_gb, premium_days, max_uses, used_count, is_active, created_at, expires_at FROM promo_codes WHERE code = ? FOR UPDATE`), code)
+	var promo PromoCode
+	if err := row.Scan(&promo.Code, &promo.QuotaGB, &promo.PremiumDays, &promo.MaxUses, &promo.UsedCount, &promo.IsActive, &promo.CreatedAt, &promo.ExpiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("promocode not found")
+		}
+		return nil, err
+	}
+	if promo.IsActive != 1 {
+		return nil, errors.New("promocode disabled")
+	}
+	if promo.MaxUses > 0 && promo.UsedCount >= promo.MaxUses {
+		return nil, errors.New("promocode usage limit reached")
+	}
+	if promo.ExpiresAt != nil && *promo.ExpiresAt <= now() {
+		return nil, errors.New("promocode expired")
+	}
+	if _, err := tx.Exec(pg("INSERT INTO promo_uses (code, telegram_id, used_at) VALUES (?, ?, ?)"), promo.Code, user.TelegramID, now()); err != nil {
+		return nil, errors.New("promocode already used")
+	}
+	if _, err := tx.Exec(pg("UPDATE promo_codes SET used_count = used_count + 1 WHERE code = ?"), promo.Code); err != nil {
+		return nil, err
+	}
+	newQuota := user.QuotaGB + promo.QuotaGB
+	if _, err := tx.Exec(pg("UPDATE users SET quota_gb = ?, updated_at = ? WHERE telegram_id = ?"), newQuota, now(), user.TelegramID); err != nil {
+		return nil, err
+	}
+	if promo.PremiumDays > 0 {
+		until := time.Now().UTC().Add(time.Duration(promo.PremiumDays) * 24 * time.Hour).Format(time.RFC3339)
+		if _, err := tx.Exec(pg("UPDATE users SET is_supporter = 1, supporter_until = ?, updated_at = ? WHERE telegram_id = ?"), until, now(), user.TelegramID); err != nil {
+			return nil, err
+		}
+	}
+	return &promo, tx.Commit()
 }
 
 func (db *DB) restoreUsers(ctx context.Context, users []User) error {

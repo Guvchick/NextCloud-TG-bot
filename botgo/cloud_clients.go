@@ -59,14 +59,18 @@ func (p *Platega) request(method, path string, body any) (map[string]any, error)
 	return payload, nil
 }
 
-func (p *Platega) CreatePayment(amount int, description, payload, returnURL, failedURL string) (map[string]any, error) {
+func (p *Platega) CreatePayment(amount int, description, payload, returnURL, failedURL, callbackURL string) (map[string]any, error) {
 	body := map[string]any{
 		"paymentDetails": map[string]any{"amount": amount, "currency": "RUB"},
 		"description":    description,
 		"payload":        payload,
 	}
+	if callbackURL != "" {
+		body["callbackUrl"] = callbackURL
+	}
 	if returnURL != "" {
 		body["return"] = returnURL
+		body["returnUrl"] = returnURL
 	}
 	if failedURL != "" {
 		body["failedUrl"] = failedURL
@@ -76,11 +80,31 @@ func (p *Platega) CreatePayment(amount int, description, payload, returnURL, fai
 		return nil, err
 	}
 	transactionID := fmt.Sprint(data["transactionId"])
-	paymentURL := fmt.Sprint(data["url"])
+	paymentURL := firstMapString(data, "url", "redirect", "paymentUrl", "paymentURL", "payformUrl", "payformSuccessUrl")
 	if transactionID == "" || transactionID == "<nil>" || paymentURL == "" || paymentURL == "<nil>" {
 		return nil, errors.New("Platega response does not contain transactionId or url")
 	}
+	data["url"] = paymentURL
 	return data, nil
+}
+
+func firstMapString(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		raw := data[key]
+		value := ""
+		switch v := raw.(type) {
+		case json.Number:
+			value = v.String()
+		case float64:
+			value = strconv.FormatFloat(v, 'f', -1, 64)
+		default:
+			value = strings.TrimSpace(fmt.Sprint(raw))
+		}
+		if value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (p *Platega) Transaction(transactionID string) (map[string]any, error) {

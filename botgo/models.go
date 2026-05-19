@@ -28,6 +28,26 @@ type Config struct {
 	PlategaAmountsRUB            []int
 	PlategaReturnURL             string
 	PlategaFailedURL             string
+	PlategaCallbackURL           string
+	PublicWebhookBaseURL         string
+	PallyEnabled                 bool
+	PallyToken                   string
+	PallyShopID                  string
+	PallyBaseURL                 string
+	PallyCallbackPath            string
+	CryptoBotEnabled             bool
+	CryptoBotToken               string
+	CryptoBotBaseURL             string
+	CryptoBotWebhookPath         string
+	HeleketEnabled               bool
+	HeleketMerchantID            string
+	HeleketAPIKey                string
+	HeleketBaseURL               string
+	HeleketCurrency              string
+	HeleketToCurrency            string
+	HeleketWebhookPath           string
+	WebhookListenAddr            string
+	PlategaWebhookPath           string
 	TelegramMaxDownloadMB        int
 	PremiumDays                  int
 	BackupRetentionDays          int
@@ -52,6 +72,9 @@ type App struct {
 	db        *DB
 	nc        *Nextcloud
 	platega   *Platega
+	pally     *Pally
+	cryptoBot *CryptoBotPay
+	heleket   *Heleket
 	states    *StateStore
 	uploads   *UploadQueue
 	batches   *UploadBatchManager
@@ -80,12 +103,42 @@ type User struct {
 }
 
 type Payment struct {
-	TransactionID string `json:"transaction_id"`
-	TelegramID    int64  `json:"telegram_id"`
-	Provider      string `json:"provider"`
-	Amount        int    `json:"amount"`
-	Currency      string `json:"currency"`
-	Status        string `json:"status"`
+	TransactionID string  `json:"transaction_id"`
+	TelegramID    int64   `json:"telegram_id"`
+	Provider      string  `json:"provider"`
+	Amount        int     `json:"amount"`
+	Currency      string  `json:"currency"`
+	Status        string  `json:"status"`
+	PaymentURL    *string `json:"payment_url"`
+	Payload       *string `json:"payload"`
+	CreatedAt     string  `json:"created_at"`
+	UpdatedAt     string  `json:"updated_at"`
+}
+
+type PromoCode struct {
+	Code        string  `json:"code"`
+	QuotaGB     int     `json:"quota_gb"`
+	PremiumDays int     `json:"premium_days"`
+	MaxUses     int     `json:"max_uses"`
+	UsedCount   int     `json:"used_count"`
+	IsActive    int     `json:"is_active"`
+	CreatedAt   string  `json:"created_at"`
+	ExpiresAt   *string `json:"expires_at"`
+}
+
+type BotStats struct {
+	UsersTotal        int
+	UsersRequested    int
+	UsersApproved     int
+	UsersRejected     int
+	UsersDisabled     int
+	SupportersActive  int
+	QuotaTotalGB      int
+	PaymentsTotal     int
+	PaymentsConfirmed int
+	PaymentsRub       int
+	PromoCodesTotal   int
+	PromoUsesTotal    int
 }
 
 type StateKind string
@@ -99,6 +152,10 @@ const (
 	StateSticker        StateKind = "sticker"
 	StateContentMessage StateKind = "content_message"
 	StateContentButton  StateKind = "content_button"
+	StateContentPhoto   StateKind = "content_photo"
+	StatePromoApply     StateKind = "promo_apply"
+	StatePromoCreate    StateKind = "promo_create"
+	StateSetting        StateKind = "setting"
 )
 
 type State struct {
