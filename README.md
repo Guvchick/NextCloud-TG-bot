@@ -45,9 +45,12 @@ cp .env.example .env
 # Telegram bot
 BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789,987654321
+COMPOSE_PROFILES=
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 TELEGRAM_FILE_BASE_URL=https://api.telegram.org/file
 TELEGRAM_LOCAL_MODE=false
+TELEGRAM_API_ID=
+TELEGRAM_API_HASH=
 TELEGRAM_LOCAL_PATH_PREFIX=
 TELEGRAM_BOT_PATH_PREFIX=
 
@@ -64,12 +67,11 @@ POSTGRES_DB=bot
 POSTGRES_USER=bot
 POSTGRES_PASSWORD=change-me-please
 POSTGRES_SSLMODE=disable
-DATABASE_URL=http://bot-db:8080
 REDIS_URL=redis://redis:6379/0
-DATABASE_API_TOKEN=
 DATABASE_SECRET_KEY=
 BACKUP_DIR=backups
 LOG_DIR=logs
+LOG_LEVEL=info
 
 # User interface blocks
 ENABLE_SUPPORT_BLOCK=true
@@ -103,6 +105,7 @@ PREMIUM_DAYS=30
 
 # Stickers
 STICKER_STORE_FILE=data/stickers.json
+CONTENT_STORE_FILE=data/content.json
 STICKER_PACK_URL=https://t.me/addemoji/CPT_Emoji
 ```
 
@@ -111,11 +114,18 @@ STICKER_PACK_URL=https://t.me/addemoji/CPT_Emoji
 `TELEGRAM_API_BASE_URL` и `TELEGRAM_FILE_BASE_URL` по умолчанию используют публичный Bot API. Для локального `tdlib/telegram-bot-api` или `tdlight-team/tdlight-telegram-bot-api` обычно ставят:
 
 ```env
+COMPOSE_PROFILES=telegram-local
 TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081
 TELEGRAM_FILE_BASE_URL=http://telegram-bot-api:8081/file
 TELEGRAM_LOCAL_MODE=true
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your_api_hash
 TELEGRAM_MAX_DOWNLOAD_MB=2000
+TELEGRAM_LOCAL_PATH_PREFIX=/var/lib/telegram-bot-api
+TELEGRAM_BOT_PATH_PREFIX=/telegram-bot-api-data
 ```
+
+`TELEGRAM_API_ID` и `TELEGRAM_API_HASH` нужны только для локального Bot API. Их берут в https://my.telegram.org/apps. Если указать `TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081`, но не включить `COMPOSE_PROFILES=telegram-local`, бот не найдет контейнер `telegram-bot-api` и будет писать ошибку DNS.
 
 В `--local` режиме `getFile` может вернуть абсолютный путь к файлу на локальном Bot API сервере. Если бот видит тот же volume по другому пути, задайте маппинг: `TELEGRAM_LOCAL_PATH_PREFIX=/var/lib/telegram-bot-api` и `TELEGRAM_BOT_PATH_PREFIX=/telegram-bot-api-data`.
 
@@ -139,7 +149,7 @@ NEXTCLOUD_HOSTNAME=claud.kys-paw.life
 
 Файлы из Telegram загружаются в корень диска пользователя. Пользовательский интерфейс говорит просто про облако, без технических деталей Nextcloud/WebDAV.
 
-Telegram-бот запускается как Go-бинарник из `botgo`. Долговременные данные хранит PostgreSQL, а Go-сервис `bot-db` дает боту внутренний RPC по `DATABASE_URL`. Redis используется для временных Telegram-состояний: поиск, рассылка, смена пароля, кастомная квота и установка стикеров. `DATABASE_API_TOKEN` включает bearer-токен между ботом и Go-БД. `DATABASE_SECRET_KEY` включает шифрование сохраненных Nextcloud-паролей перед записью в PostgreSQL. Укажите длинную случайную строку и не меняйте ее после запуска: старые зашифрованные пароли без нее не расшифровать.
+Telegram-бот запускается как Go-бинарник из `botgo` и подключается напрямую к единственному PostgreSQL-контейнеру. Redis используется для временных Telegram-состояний: поиск, рассылка, смена пароля, кастомная квота и установка стикеров. `DATABASE_SECRET_KEY` включает шифрование сохраненных Nextcloud-паролей перед записью в PostgreSQL. Укажите длинную случайную строку и не меняйте ее после запуска: старые зашифрованные пароли без нее не расшифровать.
 
 `ENABLE_SUPPORT_BLOCK=false` полностью убирает кнопку поддержки. `SUPPORT_TELEGRAM` и `SUPPORT_EMAIL` показываются пользователю в разделе поддержки.
 
@@ -153,7 +163,7 @@ Telegram-бот запускается как Go-бинарник из `botgo`. 
 
 `PREMIUM_DAYS` - срок действия премиум-иконки после Telegram Stars, Platega или ручной выдачи админом. По умолчанию `30`, то есть примерно один месяц.
 
-`STICKER_STORE_FILE` - JSON-файл, где бот хранит кастомные Telegram-стикеры и custom emoji, чтобы они не сбрасывались после перезапуска. Настройка доступна в админке через `✨ Стикеры`: выбрать событие, отправить стикер или custom emoji, посмотреть предпросмотр или очистить. `STICKER_PACK_URL` показывает админам тестовый пакет, по умолчанию `https://t.me/addemoji/CPT_Emoji`. Bot API не позволяет импортировать все `file_id` пака по ссылке, поэтому нужный стикер надо отправить боту один раз.
+`STICKER_STORE_FILE` - JSON-файл, где бот хранит кастомные Telegram-стикеры и custom emoji, чтобы они не сбрасывались после перезапуска. Настройка доступна в админке через `✨ Стикеры`: выбрать событие, отправить стикер или custom emoji, посмотреть предпросмотр или очистить. `CONTENT_STORE_FILE` хранит редактируемые тексты и названия кнопок из меню `✏️ Тексты и кнопки`; туда можно вставлять эмодзи и HTML. `STICKER_PACK_URL` показывает админам тестовый пакет, по умолчанию `https://t.me/addemoji/CPT_Emoji`. Bot API не позволяет импортировать все `file_id` пака по ссылке, поэтому нужный стикер надо отправить боту один раз.
 
 ## Запуск локально
 
@@ -167,7 +177,7 @@ go run ./botgo
 docker compose up -d --build
 ```
 
-Данные PostgreSQL хранятся в Docker volume `postgres_data`, Redis - в `redis_data`, бекапы - в `./backups`, логи - в `./logs`, стикеры/custom emoji - в `./data`.
+Данные PostgreSQL хранятся в Docker volume `postgres_data`, Redis - в `redis_data`, локальный Telegram Bot API - в `telegram_bot_api_data`, бекапы - в `./backups`, логи - в `./logs`, стикеры/custom emoji и тексты - в `./data`.
 
 ## Команды
 

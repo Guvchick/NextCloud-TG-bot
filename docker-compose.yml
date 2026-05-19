@@ -28,24 +28,22 @@ services:
       timeout: 5s
       retries: 10
 
-  bot-db:
-    build:
-      context: .
-      dockerfile: dbservice/Dockerfile
+  telegram-bot-api:
+    image: tdlight/tdlightbotapi:latest
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
+    profiles:
+      - telegram-local
     env_file:
       - .env
+    command:
+      - "--local"
+      - "--dir=/var/lib/telegram-bot-api"
+      - "--http-port=8081"
     environment:
-      DB_LISTEN_ADDR: ":8080"
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-bot}
-      POSTGRES_USER: ${POSTGRES_USER:-bot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
-      POSTGRES_SSLMODE: disable
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+    volumes:
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
 
   telegram-nextcloud-bot:
     build:
@@ -53,19 +51,25 @@ services:
       dockerfile: botgo/Dockerfile
     restart: unless-stopped
     depends_on:
-      bot-db:
-        condition: service_started
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
       - .env
     environment:
-      DATABASE_URL: http://bot-db:8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_SSLMODE: disable
       REDIS_URL: redis://redis:6379/0
     volumes:
       - ./backups:/app/backups
       - ./logs:/app/logs
       - ./data:/app/data
+      - telegram_bot_api_data:/telegram-bot-api-data
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "${NEXTCLOUD_HOSTNAME:-cloud.example.com}:host-gateway"
@@ -73,3 +77,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  telegram_bot_api_data:

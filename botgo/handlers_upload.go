@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -56,7 +57,7 @@ func (a *App) handleUpload(msg *Message) {
 	limit := int64(a.cfg.TelegramMaxDownloadMB) * 1024 * 1024
 	if size > 0 && size > limit {
 		_ = a.sendEventSticker(msg.Chat.ID, "error")
-		_, _ = a.tg.SendMessage(msg.Chat.ID, fmt.Sprintf("⚠️ Telegram не дает боту скачать этот файл: он больше <b>%d MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака.", a.cfg.TelegramMaxDownloadMB), nil)
+		_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("upload_too_large", map[string]string{"limit_mb": strconv.Itoa(a.cfg.TelegramMaxDownloadMB)}), nil)
 		return
 	}
 	isSupporter := isPremium(user)
@@ -100,8 +101,9 @@ func (a *App) processUpload(job UploadJob) {
 	tmp, cleanup, err := a.tg.DownloadFile(job.FileID)
 	if err != nil {
 		_ = a.sendEventSticker(job.ChatID, "error")
-		a.batches.set(a, job, "failed", "", fmt.Sprintf("Telegram не дает боту скачать файл. Лимит через бота: %d MB.", a.cfg.TelegramMaxDownloadMB), "")
-		log.Printf("telegram download failed: %v", err)
+		userMessage := a.telegramDownloadErrorText(err)
+		a.batches.set(a, job, "failed", "", userMessage, "")
+		log.Printf("upload failed at telegram download: telegram_id=%d file=%s size=%d local_mode=%v api=%s err=%s", job.TelegramID, job.Filename, job.FileSize, a.cfg.TelegramLocalMode, a.cfg.TelegramAPIBaseURL, err.Error())
 		return
 	}
 	if cleanup {
@@ -141,14 +143,28 @@ func (a *App) accountText(user *User) string {
 		premium = "⭐ <b>Премиум-поддержка</b> до <b>" + esc(premiumUntilText(user)) + "</b>\n"
 	}
 	login := strPtr(user.NCUserID, strconv.FormatInt(user.TelegramID, 10))
-	return "☁️✨ <b>Ваше облако</b> ✨\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
-		premium +
-		`🌐 Ссылка: <a href="` + esc(a.cfg.NextcloudURL) + `">` + esc(a.cfg.NextcloudURL) + `</a>` + "\n" +
-		"🆔 Логин: <code>" + esc(login) + "</code>\n" +
-		"🔐 Пароль: " + password + "\n" +
-		fmt.Sprintf("💾 Квота: <b>%d GB</b>\n\n", user.QuotaGB) +
-		a.storageText(user) + "\n\n" +
-		"📤 Отправьте файл в этот чат, и бот загрузит его в облако."
+	return a.content.Message("account_home", map[string]string{
+		"premium":   premium,
+		"cloud_url": esc(a.cfg.NextcloudURL),
+		"login":     esc(login),
+		"password":  password,
+		"quota_gb":  strconv.Itoa(user.QuotaGB),
+		"storage":   a.storageText(user),
+	})
+}
+
+func (a *App) telegramDownloadErrorText(err error) string {
+	text := err.Error()
+	if a.cfg.TelegramLocalMode {
+		if strings.Contains(text, "lookup") || strings.Contains(text, "connection refused") || strings.Contains(text, "no such host") {
+			return "Локальный Telegram Bot API недоступен. Проверьте, что сервис <code>telegram-bot-api</code> запущен в docker compose и включен профиль <code>telegram-local</code>."
+		}
+		if strings.Contains(text, "not readable") || strings.Contains(text, "no such file") {
+			return "Локальный Bot API вернул путь к файлу, но бот его не видит. Проверьте общий volume и <code>TELEGRAM_LOCAL_PATH_PREFIX</code>/<code>TELEGRAM_BOT_PATH_PREFIX</code>."
+		}
+		return "Локальный Telegram Bot API не смог отдать файл: " + text
+	}
+	return fmt.Sprintf("Telegram не дает боту скачать файл. Лимит через публичный Bot API: %d MB. Для больших файлов включите локальный Bot API.", a.cfg.TelegramMaxDownloadMB)
 }
 
 func (a *App) storageText(user *User) string {

@@ -29,14 +29,14 @@ func (a *App) start(msg *Message) {
 			}
 		}
 		_ = a.sendEventSticker(msg.Chat.ID, "welcome")
-		_, _ = a.tg.SendMessage(msg.Chat.ID, a.accountText(user), accountKeyboard(a.cfg, langOf(user)))
+		_, _ = a.tg.SendMessage(msg.Chat.ID, a.accountText(user), a.accountKeyboard(langOf(user)))
 		return
 	}
 	if user.Status == "rejected" {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, "Ваша заявка на beta-тест сейчас отклонена.", nil)
+		_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("rejected", nil), nil)
 		return
 	}
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "<b>Заявка отправлена ✨</b>\n\nАдминистратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов.", nil)
+	_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("beta_sent", nil), nil)
 	for adminID := range a.cfg.AdminIDs {
 		text := "<b>Новая заявка на beta-тест</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
 			"Пользователь: " + displayName(user) + "\n" +
@@ -66,6 +66,20 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", usersMenuKeyboard())
 	case data == "stickers":
 		a.edit(cb, a.stickersText(), stickersKeyboard(a.stickers, a.cfg.StickerPackURL))
+	case data == "content":
+		a.edit(cb, a.contentText(), contentKeyboard())
+	case data == "content:messages":
+		a.edit(cb, "💬 <b>Сообщения</b>\n\nВыберите текст, который нужно изменить.", contentListKeyboard("message"))
+	case data == "content:buttons":
+		a.edit(cb, "🔘 <b>Кнопки</b>\n\nВыберите кнопку, которую нужно переименовать.", contentListKeyboard("button"))
+	case strings.HasPrefix(data, "content:message:"):
+		a.contentItem(cb, "message", strings.TrimPrefix(data, "content:message:"))
+	case strings.HasPrefix(data, "content:button:"):
+		a.contentItem(cb, "button", strings.TrimPrefix(data, "content:button:"))
+	case strings.HasPrefix(data, "content:set:"):
+		a.contentSetStart(cb)
+	case strings.HasPrefix(data, "content:reset:"):
+		a.contentReset(cb)
 	case strings.HasPrefix(data, "sticker:event:"):
 		a.stickerEvent(cb)
 	case strings.HasPrefix(data, "sticker:set:"):
@@ -158,6 +172,10 @@ func (a *App) handleStateMessage(msg *Message, st State) {
 		a.broadcastMessage(msg)
 	case StateSticker:
 		a.saveSticker(msg, st)
+	case StateContentMessage:
+		a.saveContentMessage(msg, st)
+	case StateContentButton:
+		a.saveContentButton(msg, st)
 	case StateQuotaCustom:
 		amount, err := strconv.Atoi(strings.TrimSpace(msg.Text))
 		if err != nil || amount <= 0 {
@@ -182,6 +200,97 @@ func (a *App) adminSummary() string {
 func (a *App) maintenanceText() string {
 	return "🔄 <b>Синхронизация и восстановление</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
 		"Здесь проверяется связь с облаком, синхронизируются пользователи и управляются сжатые бекапы PostgreSQL."
+}
+
+func (a *App) contentText() string {
+	return "✏️ <b>Тексты и кнопки</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n" +
+		"Здесь можно менять сообщения пользователям и названия кнопок прямо из Telegram.\n\n" +
+		"HTML и эмодзи разрешены. Для динамических данных используйте плейсхолдеры вроде <code>{login}</code>, <code>{password}</code>, <code>{storage}</code>."
+}
+
+func (a *App) contentItem(cb *CallbackQuery, kind, key string) {
+	items := contentMessages
+	value := ""
+	if kind == "message" {
+		if !contentKeyExists(contentMessages, key) {
+			a.tg.AnswerCallback(cb.ID, "Неизвестный текст", true)
+			return
+		}
+		value = a.content.messageRaw(key)
+	} else {
+		items = contentButtons
+		if !contentKeyExists(contentButtons, key) {
+			a.tg.AnswerCallback(cb.ID, "Неизвестная кнопка", true)
+			return
+		}
+		value = a.content.Button(key)
+	}
+	text := "✏️ <b>" + esc(contentTitle(items, key)) + "</b>\n\nКлюч: <code>" + esc(key) + "</code>\n\nТекущее значение:\n<code>" + esc(value) + "</code>"
+	a.edit(cb, text, contentEditKeyboard(kind, key))
+}
+
+func (a *App) contentSetStart(cb *CallbackQuery) {
+	parts := strings.SplitN(cb.Data, ":", 4)
+	if len(parts) != 4 {
+		return
+	}
+	kind := parts[2]
+	key := parts[3]
+	if kind == "message" {
+		a.states.Set(cb.From.ID, State{Kind: StateContentMessage, Event: key})
+		a.edit(cb, "💬 Отправьте новый текст сообщения.\n\nМожно использовать HTML, эмодзи и плейсхолдеры. Чтобы оставить переносы строк, отправляйте обычное многострочное сообщение.", contentEditKeyboard(kind, key))
+		return
+	}
+	a.states.Set(cb.From.ID, State{Kind: StateContentButton, Event: key})
+	a.edit(cb, "🔘 Отправьте новое название кнопки. Эмодзи можно.", contentEditKeyboard(kind, key))
+}
+
+func (a *App) contentReset(cb *CallbackQuery) {
+	parts := strings.SplitN(cb.Data, ":", 4)
+	if len(parts) != 4 {
+		return
+	}
+	kind := parts[2]
+	key := parts[3]
+	var err error
+	if kind == "message" {
+		err = a.content.ResetMessage(key)
+	} else {
+		err = a.content.ResetButton(key)
+	}
+	if err != nil {
+		a.tg.AnswerCallback(cb.ID, "Не удалось сбросить", true)
+		return
+	}
+	a.contentItem(cb, kind, key)
+}
+
+func (a *App) saveContentMessage(msg *Message, st State) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Текст не должен быть пустым.", contentEditKeyboard("message", st.Event))
+		return
+	}
+	if err := a.content.SetMessage(st.Event, text); err != nil {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось сохранить текст: <code>"+esc(err.Error())+"</code>", contentKeyboard())
+		return
+	}
+	a.states.Clear(msg.From.ID)
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "✅ Текст сохранен: <code>"+esc(st.Event)+"</code>", contentEditKeyboard("message", st.Event))
+}
+
+func (a *App) saveContentButton(msg *Message, st State) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" || len([]rune(text)) > 48 {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Название кнопки должно быть от 1 до 48 символов.", contentEditKeyboard("button", st.Event))
+		return
+	}
+	if err := a.content.SetButton(st.Event, text); err != nil {
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Не удалось сохранить кнопку: <code>"+esc(err.Error())+"</code>", contentKeyboard())
+		return
+	}
+	a.states.Clear(msg.From.ID)
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "✅ Кнопка сохранена: <code>"+esc(st.Event)+"</code>", contentEditKeyboard("button", st.Event))
 }
 
 func (a *App) health(chatID int64) {
@@ -449,12 +558,12 @@ func (a *App) approveUser(cb *CallbackQuery) {
 	approved, _ := a.db.GetUser(id)
 	_ = a.sendEventSticker(id, "approved")
 	_, _ = a.tg.SendMessage(id,
-		"✅ <b>Ваша заявка одобрена</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n"+
-			"🆔 Логин: <code>"+esc(ncUserID)+"</code>\n"+
-			"🔐 Пароль: <code>"+esc(password)+"</code>\n"+
-			fmt.Sprintf("💾 Квота: <b>%d GB</b>\n\n", a.cfg.DefaultQuotaGB)+
-			"📤 Файлы можно отправлять прямо сюда: бот загрузит их в облако.\nПароль всегда виден в /start, там же его можно сменить.",
-		accountKeyboard(a.cfg, langOf(approved)),
+		a.content.Message("approved", map[string]string{
+			"login":    esc(ncUserID),
+			"password": esc(password),
+			"quota_gb": strconv.Itoa(a.cfg.DefaultQuotaGB),
+		}),
+		a.accountKeyboard(langOf(approved)),
 	)
 	a.edit(cb, fmt.Sprintf("✅ Доступ выдан пользователю <code>%d</code>: %d GB.", id, a.cfg.DefaultQuotaGB), adminKeyboard())
 	log.Printf("user approved: telegram_id=%d nc_user_id=%s", id, ncUserID)
@@ -464,7 +573,7 @@ func (a *App) rejectUser(cb *CallbackQuery) {
 	id := parseLastInt(cb.Data)
 	user, _ := a.db.GetUser(id)
 	_ = a.db.RejectUser(id)
-	_, _ = a.tg.SendMessage(id, "Ваша заявка на beta-тест сейчас отклонена.", nil)
+	_, _ = a.tg.SendMessage(id, a.content.Message("rejected", nil), nil)
 	a.edit(cb, fmt.Sprintf("❌ Заявка пользователя <code>%d</code> отклонена.", id), adminKeyboard())
 	log.Printf("user rejected: telegram_id=%d user=%v", id, user != nil)
 }
@@ -512,7 +621,7 @@ func (a *App) resetPassword(cb *CallbackQuery) {
 		return
 	}
 	_ = a.db.SetNextcloudPassword(id, password)
-	_, _ = a.tg.SendMessage(id, "🔐 Администратор сбросил пароль для вашего облака.\n\nЛогин: <code>"+esc(*user.NCUserID)+"</code>\nНовый пароль: <code>"+esc(password)+"</code>", accountKeyboard(a.cfg, langOf(user)))
+	_, _ = a.tg.SendMessage(id, "🔐 Администратор сбросил пароль для вашего облака.\n\nЛогин: <code>"+esc(*user.NCUserID)+"</code>\nНовый пароль: <code>"+esc(password)+"</code>", a.accountKeyboard(langOf(user)))
 	_, _ = a.tg.SendMessage(cb.Message.Chat.ID, fmt.Sprintf("🔐 Пароль пользователя <code>%d</code> сброшен.", id), adminKeyboard())
 }
 

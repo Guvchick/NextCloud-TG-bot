@@ -28,8 +28,6 @@ func loadConfig() Config {
 		NextcloudAdminUser:           requiredEnv("NEXTCLOUD_ADMIN_USER"),
 		NextcloudAdminPassword:       requiredEnv("NEXTCLOUD_ADMIN_PASSWORD"),
 		DefaultQuotaGB:               envInt("DEFAULT_QUOTA_GB", 10),
-		DatabaseURL:                  strings.TrimRight(env("DATABASE_URL", "http://bot-db:8080"), "/"),
-		DatabaseAPIToken:             env("DATABASE_API_TOKEN", ""),
 		RedisURL:                     env("REDIS_URL", "redis://redis:6379/0"),
 		BackupDir:                    env("BACKUP_DIR", "backups"),
 		LogDir:                       env("LOG_DIR", "logs"),
@@ -62,6 +60,8 @@ func loadConfig() Config {
 		TelegramLocalMode:            telegramLocalMode,
 		TelegramLocalPathPrefix:      strings.TrimRight(env("TELEGRAM_LOCAL_PATH_PREFIX", ""), "/"),
 		TelegramBotPathPrefix:        strings.TrimRight(env("TELEGRAM_BOT_PATH_PREFIX", ""), "/"),
+		ContentStoreFile:             env("CONTENT_STORE_FILE", "data/content.json"),
+		LogLevel:                     strings.ToLower(env("LOG_LEVEL", "info")),
 	}
 }
 

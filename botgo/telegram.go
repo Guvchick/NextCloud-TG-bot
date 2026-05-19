@@ -144,7 +144,7 @@ func (tg *Telegram) call(method string, payload any, out any) error {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := tg.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("Telegram %s request failed: %s", method, tg.cleanError(err))
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -153,7 +153,7 @@ func (tg *Telegram) call(method string, payload any, out any) error {
 		return fmt.Errorf("Telegram returned non-JSON response (%d): %s", resp.StatusCode, string(raw[:min(len(raw), 300)]))
 	}
 	if !envelope.OK {
-		return errors.New(envelope.Description)
+		return errors.New(tg.cleanText(envelope.Description))
 	}
 	if out != nil && len(envelope.Result) > 0 {
 		return json.Unmarshal(envelope.Result, out)
@@ -250,7 +250,7 @@ func (tg *Telegram) DownloadFile(fileID string) (string, bool, error) {
 	}
 	resp, err := tg.client.Get(tg.fileURL + file.FilePath)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("Telegram file download failed: %s", tg.cleanError(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -307,7 +307,7 @@ func (tg *Telegram) SendDocument(chatID int64, path string, caption string) erro
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	resp, err := tg.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("Telegram sendDocument failed: %s", tg.cleanError(err))
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -316,7 +316,21 @@ func (tg *Telegram) SendDocument(chatID int64, path string, caption string) erro
 		return err
 	}
 	if !envelope.OK {
-		return errors.New(envelope.Description)
+		return errors.New(tg.cleanText(envelope.Description))
 	}
 	return nil
+}
+
+func (tg *Telegram) cleanError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return tg.cleanText(err.Error())
+}
+
+func (tg *Telegram) cleanText(text string) string {
+	if tg.token != "" {
+		text = strings.ReplaceAll(text, tg.token, "<bot-token>")
+	}
+	return text
 }

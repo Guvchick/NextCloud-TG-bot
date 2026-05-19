@@ -13,7 +13,7 @@ func (a *App) accountHome(cb *CallbackQuery) {
 		a.tg.AnswerCallback(cb.ID, "Доступ не активен", true)
 		return
 	}
-	a.edit(cb, a.accountText(user), accountKeyboard(a.cfg, langOf(user)))
+	a.edit(cb, a.accountText(user), a.accountKeyboard(langOf(user)))
 }
 
 func (a *App) accountSupport(cb *CallbackQuery) {
@@ -38,7 +38,8 @@ func (a *App) accountSupport(cb *CallbackQuery) {
 		lines = append(lines, "Контакты поддержки пока не настроены.")
 	}
 	_ = a.sendEventSticker(cb.Message.Chat.ID, "support")
-	a.edit(cb, strings.Join(lines, "\n"), accountBackKeyboard())
+	contacts := strings.Join(lines[2:], "\n")
+	a.edit(cb, a.content.Message("support", map[string]string{"support_contacts": contacts}), accountBackKeyboard())
 }
 
 func (a *App) accountDonate(cb *CallbackQuery) {
@@ -46,9 +47,8 @@ func (a *App) accountDonate(cb *CallbackQuery) {
 		a.tg.AnswerCallback(cb.ID, "Раздел доната отключен", true)
 		return
 	}
-	text := "<b>💙 Поддержать проект</b>\n\nМожно поддержать проект через Telegram Stars или внешнюю ссылку.\nВыберите способ поддержки."
 	_ = a.sendEventSticker(cb.Message.Chat.ID, "donate")
-	a.edit(cb, text, donateKeyboard(a.cfg))
+	a.edit(cb, a.content.Message("donate", nil), donateKeyboard(a.cfg))
 }
 
 func (a *App) donateCallback(cb *CallbackQuery) {
@@ -147,7 +147,7 @@ func (a *App) plategaCheck(cb *CallbackQuery) {
 	if status == "CONFIRMED" {
 		until := time.Now().UTC().Add(time.Duration(a.cfg.PremiumDays) * 24 * time.Hour).Format(time.RFC3339)
 		_ = a.db.SetSupporter(storedPayment.TelegramID, true, &until)
-		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "⭐ Оплата подтверждена! Премиум-иконка активирована.", accountKeyboard(a.cfg, "ru"))
+		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "⭐ Оплата подтверждена! Премиум-иконка активирована.", a.accountKeyboard("ru"))
 		a.tg.AnswerCallback(cb.ID, "Оплачено", false)
 		return
 	}
@@ -166,7 +166,7 @@ func (a *App) setLanguage(cb *CallbackQuery) {
 	_ = a.db.SetLanguage(cb.From.ID, lang)
 	user, _ := a.db.GetUser(cb.From.ID)
 	if user != nil {
-		a.edit(cb, a.accountText(user), accountKeyboard(a.cfg, lang))
+		a.edit(cb, a.accountText(user), a.accountKeyboard(lang))
 	}
 }
 
@@ -189,7 +189,7 @@ func (a *App) applyUserPassword(msg *Message) {
 	_ = a.db.SetNextcloudPassword(user.TelegramID, password)
 	a.states.Clear(msg.From.ID)
 	_ = a.sendEventSticker(msg.Chat.ID, "password")
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "✅ Пароль сменен.\n\nЛогин: <code>"+esc(*user.NCUserID)+"</code>\nПароль: <code>"+esc(password)+"</code>", accountKeyboard(a.cfg, langOf(user)))
+	_, _ = a.tg.SendMessage(msg.Chat.ID, a.content.Message("password_changed", map[string]string{"login": esc(*user.NCUserID), "password": esc(password)}), a.accountKeyboard(langOf(user)))
 }
 
 func (a *App) handleSuccessfulPayment(msg *Message) {
@@ -200,6 +200,5 @@ func (a *App) handleSuccessfulPayment(msg *Message) {
 	until := time.Now().UTC().Add(time.Duration(a.cfg.PremiumDays) * 24 * time.Hour).Format(time.RFC3339)
 	_ = a.db.SetSupporter(msg.From.ID, true, &until)
 	_ = a.db.CreatePayment(msg.SuccessfulPayment.TelegramPaymentChargeID, msg.From.ID, "telegram_stars", msg.SuccessfulPayment.TotalAmount, "XTR", "CONFIRMED", nil, &payload)
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "⭐ Спасибо за поддержку! Премиум-иконка активирована.", accountKeyboard(a.cfg, "ru"))
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "⭐ Спасибо за поддержку! Премиум-иконка активирована.", a.accountKeyboard("ru"))
 }
-

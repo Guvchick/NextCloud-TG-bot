@@ -16,6 +16,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("redis config: %v", err)
 	}
+	db, err := NewDB(cfg)
+	if err != nil {
+		log.Fatalf("postgres config: %v", err)
+	}
 
 	app := &App{
 		cfg: cfg,
@@ -28,11 +32,7 @@ func main() {
 			botPathPrefix:   cfg.TelegramBotPathPrefix,
 			client:          &http.Client{Timeout: 90 * time.Second},
 		},
-		db: &DB{
-			baseURL: strings.TrimRight(cfg.DatabaseURL, "/"),
-			token:   cfg.DatabaseAPIToken,
-			client:  &http.Client{Timeout: 30 * time.Second},
-		},
+		db: db,
 		nc: &Nextcloud{
 			baseURL:  strings.TrimRight(cfg.NextcloudInternalURL, "/"),
 			username: cfg.NextcloudAdminUser,
@@ -44,9 +44,13 @@ func main() {
 		batches:  NewUploadBatchManager(),
 		quota:    NewQuotaCache(time.Duration(cfg.QuotaCacheSeconds) * time.Second),
 		stickers: NewStickerStore(cfg.StickerStoreFile),
+		content:  NewContentStore(cfg.ContentStoreFile),
 	}
 	if err := app.stickers.Load(); err != nil {
 		log.Printf("sticker store load failed: %v", err)
+	}
+	if err := app.content.Load(); err != nil {
+		log.Printf("content store load failed: %v", err)
 	}
 	if cfg.PlategaEnabled && cfg.PlategaMerchantID != "" && cfg.PlategaSecret != "" {
 		app.platega = &Platega{
@@ -60,7 +64,8 @@ func main() {
 	if err := app.db.Init(); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
-	log.Printf("Go Telegram bot started. public_nextcloud=%s internal_nextcloud=%s db=%s telegram_api=%s local_mode=%v", cfg.NextcloudURL, cfg.NextcloudInternalURL, cfg.DatabaseURL, cfg.TelegramAPIBaseURL, cfg.TelegramLocalMode)
+	log.Printf("bot started: nextcloud_public=%s nextcloud_internal=%s postgres=%s/%s telegram_api=%s telegram_local_mode=%v upload_workers=%d quota_cache_seconds=%d", cfg.NextcloudURL, cfg.NextcloudInternalURL, env("POSTGRES_HOST", "postgres"), env("POSTGRES_DB", "bot"), cfg.TelegramAPIBaseURL, cfg.TelegramLocalMode, cfg.UploadWorkers, cfg.QuotaCacheSeconds)
+	app.logRuntimeHints()
 
 	for i := 0; i < cfg.UploadWorkers; i++ {
 		go app.uploadWorker(i + 1)
@@ -69,6 +74,17 @@ func main() {
 	go app.nextcloudSyncLoop()
 	go app.premiumExpirationLoop()
 	app.poll()
+}
+
+func (a *App) logRuntimeHints() {
+	if a.cfg.TelegramLocalMode {
+		log.Printf("telegram local mode enabled: api=%s file_api=%s local_path_prefix=%s bot_path_prefix=%s max_download_mb=%d", a.cfg.TelegramAPIBaseURL, a.cfg.TelegramFileBaseURL, a.cfg.TelegramLocalPathPrefix, a.cfg.TelegramBotPathPrefix, a.cfg.TelegramMaxDownloadMB)
+		if strings.Contains(a.cfg.TelegramAPIBaseURL, "telegram-bot-api") {
+			log.Printf("telegram local mode hint: docker compose must run profile telegram-local; set COMPOSE_PROFILES=telegram-local if service name is telegram-bot-api")
+		}
+	} else if a.cfg.TelegramMaxDownloadMB > 20 {
+		log.Printf("telegram public api warning: TELEGRAM_MAX_DOWNLOAD_MB=%d but TELEGRAM_LOCAL_MODE=false; public Bot API may still reject large files", a.cfg.TelegramMaxDownloadMB)
+	}
 }
 
 func (a *App) poll() {

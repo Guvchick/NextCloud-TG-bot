@@ -10,7 +10,7 @@ func adminKeyboard() *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{
 		{{Text: "👥 Пользователи", CallbackData: "users:menu"}, {Text: "📝 Заявки", CallbackData: "users:requested:0"}},
 		{{Text: "📣 Рассылка", CallbackData: "broadcast"}, {Text: "🔄 Синхр./восстановление", CallbackData: "maintenance"}},
-		{{Text: "✨ Стикеры", CallbackData: "stickers"}},
+		{{Text: "✏️ Тексты и кнопки", CallbackData: "content"}, {Text: "✨ Стикеры", CallbackData: "stickers"}},
 	})
 }
 
@@ -22,24 +22,21 @@ func requestReviewKeyboard(id int64) *InlineKeyboardMarkup {
 	return keyboard([][]InlineKeyboardButton{{{Text: "✅ Одобрить", CallbackData: fmt.Sprintf("approve:%d", id)}, {Text: "❌ Отклонить", CallbackData: fmt.Sprintf("reject:%d", id)}}})
 }
 
-func accountKeyboard(cfg Config, lang string) *InlineKeyboardMarkup {
-	changePassword := "🔐 Сменить пароль"
-	support := "💬 Поддержка"
-	donate := "💙 Донат"
-	language := "🌐 Язык"
-	cloud := "☁️ Войти в облако"
+func (a *App) accountKeyboard(lang string) *InlineKeyboardMarkup {
+	suffix := "ru"
 	if lang == "en" {
-		changePassword = "🔐 Change password"
-		support = "💬 Support"
-		donate = "💙 Donate"
-		language = "🌐 Language"
-		cloud = "☁️ Open cloud"
+		suffix = "en"
 	}
-	rows := [][]InlineKeyboardButton{{{Text: cloud, URL: cfg.NextcloudURL}}, {{Text: changePassword, CallbackData: "account:change_password"}}}
-	if cfg.EnableSupportBlock {
+	cloud := a.content.Button("cloud_" + suffix)
+	changePassword := a.content.Button("change_password_" + suffix)
+	support := a.content.Button("support_" + suffix)
+	donate := a.content.Button("donate_" + suffix)
+	language := a.content.Button("language_" + suffix)
+	rows := [][]InlineKeyboardButton{{{Text: cloud, URL: a.cfg.NextcloudURL}}, {{Text: changePassword, CallbackData: "account:change_password"}}}
+	if a.cfg.EnableSupportBlock {
 		rows = append(rows, []InlineKeyboardButton{{Text: support, CallbackData: "account:support"}})
 	}
-	if cfg.EnableDonateBlock {
+	if a.cfg.EnableDonateBlock {
 		rows = append(rows, []InlineKeyboardButton{{Text: donate, CallbackData: "account:donate"}})
 	}
 	rows = append(rows, []InlineKeyboardButton{{Text: language, CallbackData: "account:language"}})
@@ -209,6 +206,34 @@ func maintenanceKeyboard() *InlineKeyboardMarkup {
 		{{Text: "☁️ Проверить мой клауд", CallbackData: "admincloud"}},
 		{{Text: "🗄️ Бекапы и восстановление", CallbackData: "backup"}},
 		{{Text: "🛠️ В админку", CallbackData: "admin"}},
+	})
+}
+
+func contentKeyboard() *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "💬 Сообщения", CallbackData: "content:messages"}, {Text: "🔘 Кнопки", CallbackData: "content:buttons"}},
+		{{Text: "🛠️ В админку", CallbackData: "admin"}},
+	})
+}
+
+func contentListKeyboard(kind string) *InlineKeyboardMarkup {
+	rows := [][]InlineKeyboardButton{}
+	items := contentMessages
+	if kind == "button" {
+		items = contentButtons
+	}
+	for _, key := range sortedContentKeys(items) {
+		rows = append(rows, []InlineKeyboardButton{{Text: contentTitle(items, key), CallbackData: "content:" + kind + ":" + key}})
+	}
+	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Тексты", CallbackData: "content"}})
+	return keyboard(rows)
+}
+
+func contentEditKeyboard(kind, key string) *InlineKeyboardMarkup {
+	return keyboard([][]InlineKeyboardButton{
+		{{Text: "✏️ Изменить", CallbackData: "content:set:" + kind + ":" + key}},
+		{{Text: "↩️ Сбросить", CallbackData: "content:reset:" + kind + ":" + key}},
+		{{Text: "⬅️ Назад", CallbackData: "content:" + mapBool(kind == "message", "messages", "buttons")}},
 	})
 }
 

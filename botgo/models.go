@@ -10,8 +10,6 @@ type Config struct {
 	NextcloudAdminUser           string
 	NextcloudAdminPassword       string
 	DefaultQuotaGB               int
-	DatabaseURL                  string
-	DatabaseAPIToken             string
 	RedisURL                     string
 	BackupDir                    string
 	LogDir                       string
@@ -44,6 +42,8 @@ type Config struct {
 	TelegramLocalMode            bool
 	TelegramLocalPathPrefix      string
 	TelegramBotPathPrefix        string
+	ContentStoreFile             string
+	LogLevel                     string
 }
 
 type App struct {
@@ -57,6 +57,7 @@ type App struct {
 	batches   *UploadBatchManager
 	quota     *QuotaCache
 	stickers  *StickerStore
+	content   *ContentStore
 	uploadSeq int64
 }
 
@@ -96,6 +97,8 @@ const (
 	StateAdminSearch    StateKind = "admin_search"
 	StateBroadcast      StateKind = "broadcast"
 	StateSticker        StateKind = "sticker"
+	StateContentMessage StateKind = "content_message"
+	StateContentButton  StateKind = "content_button"
 )
 
 type State struct {

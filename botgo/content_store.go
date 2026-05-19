@@ -1,0 +1,201 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+)
+
+type ContentItem struct {
+	Key         string
+	Title       string
+	DefaultText string
+}
+
+type ContentStore struct {
+	path     string
+	mu       sync.RWMutex
+	messages map[string]string
+	buttons  map[string]string
+}
+
+type contentStoreFile struct {
+	Messages map[string]string `json:"messages"`
+	Buttons  map[string]string `json:"buttons"`
+}
+
+var contentMessages = []ContentItem{
+	{Key: "account_home", Title: "Главное сообщение пользователя", DefaultText: "☁️✨ <b>Ваше облако</b> ✨\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n{premium}🌐 Ссылка: <a href=\"{cloud_url}\">{cloud_url}</a>\n🆔 Логин: <code>{login}</code>\n🔐 Пароль: {password}\n💾 Квота: <b>{quota_gb} GB</b>\n\n{storage}\n\n📤 Отправьте файл в этот чат, и бот загрузит его в облако."},
+	{Key: "beta_sent", Title: "Заявка отправлена", DefaultText: "<b>Заявка отправлена ✨</b>\n\nАдминистратор проверит доступ к beta-тесту. Я сообщу, когда аккаунт будет готов."},
+	{Key: "approved", Title: "Доступ одобрен", DefaultText: "✅ <b>Ваша заявка одобрена</b>\n<code>━━━━━━━━━━━━━━━━━━━━</code>\n\n🆔 Логин: <code>{login}</code>\n🔐 Пароль: <code>{password}</code>\n💾 Квота: <b>{quota_gb} GB</b>\n\n📤 Файлы можно отправлять прямо сюда: бот загрузит их в облако.\nПароль всегда виден в /start, там же его можно сменить."},
+	{Key: "rejected", Title: "Заявка отклонена", DefaultText: "Ваша заявка на beta-тест сейчас отклонена."},
+	{Key: "support", Title: "Поддержка", DefaultText: "<b>💬 Поддержка</b>\n\n{support_contacts}"},
+	{Key: "donate", Title: "Донат", DefaultText: "<b>💙 Поддержать проект</b>\n\nМожно поддержать проект через Telegram Stars или внешнюю ссылку.\nВыберите способ поддержки."},
+	{Key: "password_changed", Title: "Пароль сменен", DefaultText: "✅ Пароль сменен.\n\nЛогин: <code>{login}</code>\nПароль: <code>{password}</code>"},
+	{Key: "upload_too_large", Title: "Файл больше лимита", DefaultText: "⚠️ Telegram не дает боту скачать этот файл: он больше <b>{limit_mb} MB</b>.\n\nЗагрузите большой файл напрямую через веб-интерфейс облака."},
+}
+
+var contentButtons = []ContentItem{
+	{Key: "cloud_ru", Title: "Кнопка Войти в облако", DefaultText: "☁️ Войти в облако"},
+	{Key: "change_password_ru", Title: "Кнопка Сменить пароль", DefaultText: "🔐 Сменить пароль"},
+	{Key: "support_ru", Title: "Кнопка Поддержка", DefaultText: "💬 Поддержка"},
+	{Key: "donate_ru", Title: "Кнопка Донат", DefaultText: "💙 Донат"},
+	{Key: "language_ru", Title: "Кнопка Язык", DefaultText: "🌐 Язык"},
+	{Key: "cloud_en", Title: "Button Open cloud", DefaultText: "☁️ Open cloud"},
+	{Key: "change_password_en", Title: "Button Change password", DefaultText: "🔐 Change password"},
+	{Key: "support_en", Title: "Button Support", DefaultText: "💬 Support"},
+	{Key: "donate_en", Title: "Button Donate", DefaultText: "💙 Donate"},
+	{Key: "language_en", Title: "Button Language", DefaultText: "🌐 Language"},
+}
+
+func NewContentStore(path string) *ContentStore {
+	return &ContentStore{path: path, messages: map[string]string{}, buttons: map[string]string{}}
+}
+
+func (s *ContentStore) Load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var payload contentStoreFile
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	if payload.Messages != nil {
+		s.messages = payload.Messages
+	}
+	if payload.Buttons != nil {
+		s.buttons = payload.Buttons
+	}
+	return nil
+}
+
+func (s *ContentStore) Save() error {
+	s.mu.RLock()
+	payload := contentStoreFile{Messages: map[string]string{}, Buttons: map[string]string{}}
+	for key, value := range s.messages {
+		payload.Messages[key] = value
+	}
+	for key, value := range s.buttons {
+		payload.Buttons[key] = value
+	}
+	s.mu.RUnlock()
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, raw, 0o600)
+}
+
+func (s *ContentStore) Message(key string, vars map[string]string) string {
+	return renderTemplate(s.messageRaw(key), vars)
+}
+
+func (s *ContentStore) Button(key string) string {
+	s.mu.RLock()
+	value := strings.TrimSpace(s.buttons[key])
+	s.mu.RUnlock()
+	if value != "" {
+		return value
+	}
+	return contentDefault(contentButtons, key)
+}
+
+func (s *ContentStore) SetMessage(key, value string) error {
+	if !contentKeyExists(contentMessages, key) {
+		return errors.New("unknown message key")
+	}
+	s.mu.Lock()
+	s.messages[key] = value
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *ContentStore) SetButton(key, value string) error {
+	if !contentKeyExists(contentButtons, key) {
+		return errors.New("unknown button key")
+	}
+	s.mu.Lock()
+	s.buttons[key] = strings.TrimSpace(value)
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *ContentStore) ResetMessage(key string) error {
+	s.mu.Lock()
+	delete(s.messages, key)
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *ContentStore) ResetButton(key string) error {
+	s.mu.Lock()
+	delete(s.buttons, key)
+	s.mu.Unlock()
+	return s.Save()
+}
+
+func (s *ContentStore) messageRaw(key string) string {
+	s.mu.RLock()
+	value := strings.TrimSpace(s.messages[key])
+	s.mu.RUnlock()
+	if value != "" {
+		return value
+	}
+	return contentDefault(contentMessages, key)
+}
+
+func contentDefault(items []ContentItem, key string) string {
+	for _, item := range items {
+		if item.Key == key {
+			return item.DefaultText
+		}
+	}
+	return ""
+}
+
+func contentTitle(items []ContentItem, key string) string {
+	for _, item := range items {
+		if item.Key == key {
+			return item.Title
+		}
+	}
+	return key
+}
+
+func contentKeyExists(items []ContentItem, key string) bool {
+	for _, item := range items {
+		if item.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedContentKeys(items []ContentItem) []string {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		keys = append(keys, item.Key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func renderTemplate(text string, vars map[string]string) string {
+	for key, value := range vars {
+		text = strings.ReplaceAll(text, "{"+key+"}", value)
+	}
+	return text
+}
