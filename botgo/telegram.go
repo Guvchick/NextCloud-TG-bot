@@ -16,10 +16,13 @@ import (
 )
 
 type Telegram struct {
-	token   string
-	apiURL  string
-	fileURL string
-	client  *http.Client
+	token           string
+	apiURL          string
+	fileURL         string
+	localMode       bool
+	localPathPrefix string
+	botPathPrefix   string
+	client          *http.Client
 }
 
 type tgResponse struct {
@@ -233,30 +236,44 @@ func (tg *Telegram) GetFile(fileID string) (*BotFile, error) {
 	return &file, err
 }
 
-func (tg *Telegram) DownloadFile(fileID string) (string, error) {
+func (tg *Telegram) DownloadFile(fileID string) (string, bool, error) {
 	file, err := tg.GetFile(fileID)
 	if err != nil {
-		return "", err
+		return "", false, err
+	}
+	if tg.localMode && filepath.IsAbs(file.FilePath) {
+		path := tg.mapLocalFilePath(file.FilePath)
+		if _, err := os.Stat(path); err != nil {
+			return "", false, fmt.Errorf("Telegram local file is not readable at %s: %w. Mount Telegram Bot API data into the bot container or set TELEGRAM_LOCAL_PATH_PREFIX/TELEGRAM_BOT_PATH_PREFIX", path, err)
+		}
+		return path, false, nil
 	}
 	resp, err := tg.client.Get(tg.fileURL + file.FilePath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("Telegram file download HTTP %d: %s", resp.StatusCode, string(raw))
+		return "", false, fmt.Errorf("Telegram file download HTTP %d: %s", resp.StatusCode, string(raw))
 	}
 	tmp, err := os.CreateTemp("", "tg-nextcloud-*")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer tmp.Close()
 	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		_ = os.Remove(tmp.Name())
-		return "", err
+		return "", false, err
 	}
-	return tmp.Name(), nil
+	return tmp.Name(), true, nil
+}
+
+func (tg *Telegram) mapLocalFilePath(path string) string {
+	if tg.localPathPrefix != "" && tg.botPathPrefix != "" && strings.HasPrefix(path, tg.localPathPrefix) {
+		return tg.botPathPrefix + strings.TrimPrefix(path, tg.localPathPrefix)
+	}
+	return path
 }
 
 func (tg *Telegram) CopyMessage(chatID, fromChatID int64, messageID int) error {

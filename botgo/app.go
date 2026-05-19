@@ -20,10 +20,13 @@ func main() {
 	app := &App{
 		cfg: cfg,
 		tg: &Telegram{
-			token:   cfg.BotToken,
-			apiURL:  "https://api.telegram.org/bot" + cfg.BotToken + "/",
-			fileURL: "https://api.telegram.org/file/bot" + cfg.BotToken + "/",
-			client:  &http.Client{Timeout: 90 * time.Second},
+			token:           cfg.BotToken,
+			apiURL:          cfg.TelegramAPIBaseURL + "/bot" + cfg.BotToken + "/",
+			fileURL:         cfg.TelegramFileBaseURL + "/bot" + cfg.BotToken + "/",
+			localMode:       cfg.TelegramLocalMode,
+			localPathPrefix: cfg.TelegramLocalPathPrefix,
+			botPathPrefix:   cfg.TelegramBotPathPrefix,
+			client:          &http.Client{Timeout: 90 * time.Second},
 		},
 		db: &DB{
 			baseURL: strings.TrimRight(cfg.DatabaseURL, "/"),
@@ -57,7 +60,7 @@ func main() {
 	if err := app.db.Init(); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
-	log.Printf("Go Telegram bot started. public_nextcloud=%s internal_nextcloud=%s db=%s", cfg.NextcloudURL, cfg.NextcloudInternalURL, cfg.DatabaseURL)
+	log.Printf("Go Telegram bot started. public_nextcloud=%s internal_nextcloud=%s db=%s telegram_api=%s local_mode=%v", cfg.NextcloudURL, cfg.NextcloudInternalURL, cfg.DatabaseURL, cfg.TelegramAPIBaseURL, cfg.TelegramLocalMode)
 
 	for i := 0; i < cfg.UploadWorkers; i++ {
 		go app.uploadWorker(i + 1)
@@ -166,7 +169,7 @@ func (a *App) handleCommand(msg *Message) {
 		}
 	case "stickers":
 		if a.isAdmin(msg.From.ID) {
-			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), stickersKeyboard(a.stickers))
+			_, _ = a.tg.SendMessage(msg.Chat.ID, a.stickersText(), stickersKeyboard(a.stickers, a.cfg.StickerPackURL))
 		}
 	}
 }

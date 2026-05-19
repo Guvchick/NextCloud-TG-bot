@@ -15,6 +15,11 @@ func loadConfig() Config {
 	if nextcloudInternal == "" {
 		nextcloudInternal = nextcloudURL
 	}
+	telegramLocalMode := envBool("TELEGRAM_LOCAL_MODE", false)
+	telegramMaxDownloadDefault := 20
+	if telegramLocalMode {
+		telegramMaxDownloadDefault = 2000
+	}
 	return Config{
 		BotToken:                     requiredEnv("BOT_TOKEN"),
 		AdminIDs:                     parseAdminIDs(requiredEnv("ADMIN_IDS")),
@@ -43,7 +48,7 @@ func loadConfig() Config {
 		PlategaAmountsRUB:            envIntList("PLATEGA_AMOUNTS_RUB", []int{100, 300, 500}),
 		PlategaReturnURL:             env("PLATEGA_RETURN_URL", ""),
 		PlategaFailedURL:             env("PLATEGA_FAILED_URL", ""),
-		TelegramMaxDownloadMB:        envInt("TELEGRAM_MAX_DOWNLOAD_MB", 20),
+		TelegramMaxDownloadMB:        envInt("TELEGRAM_MAX_DOWNLOAD_MB", telegramMaxDownloadDefault),
 		PremiumDays:                  envInt("PREMIUM_DAYS", 30),
 		BackupRetentionDays:          envInt("BACKUP_RETENTION_DAYS", 7),
 		AutoBackupIntervalHours:      envInt("AUTO_BACKUP_INTERVAL_HOURS", 24),
@@ -51,7 +56,12 @@ func loadConfig() Config {
 		UploadWorkers:                envInt("UPLOAD_WORKERS", 3),
 		QuotaCacheSeconds:            envInt("QUOTA_CACHE_SECONDS", 45),
 		StickerStoreFile:             env("STICKER_STORE_FILE", "data/stickers.json"),
-		CustomEmojiPackURL:           env("CUSTOM_EMOJI_PACK_URL", "https://t.me/addemoji/CPT_Emoji"),
+		StickerPackURL:               env("STICKER_PACK_URL", env("CUSTOM_EMOJI_PACK_URL", "https://t.me/addemoji/CPT_Emoji")),
+		TelegramAPIBaseURL:           strings.TrimRight(env("TELEGRAM_API_BASE_URL", "https://api.telegram.org"), "/"),
+		TelegramFileBaseURL:          strings.TrimRight(env("TELEGRAM_FILE_BASE_URL", "https://api.telegram.org/file"), "/"),
+		TelegramLocalMode:            telegramLocalMode,
+		TelegramLocalPathPrefix:      strings.TrimRight(env("TELEGRAM_LOCAL_PATH_PREFIX", ""), "/"),
+		TelegramBotPathPrefix:        strings.TrimRight(env("TELEGRAM_BOT_PATH_PREFIX", ""), "/"),
 	}
 }
 

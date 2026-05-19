@@ -212,7 +212,7 @@ func maintenanceKeyboard() *InlineKeyboardMarkup {
 	})
 }
 
-func stickersKeyboard(store *StickerStore) *InlineKeyboardMarkup {
+func stickersKeyboard(store *StickerStore, packURL string) *InlineKeyboardMarkup {
 	rows := [][]InlineKeyboardButton{}
 	for _, event := range stickerEvents {
 		mark := eventMark(event)
@@ -225,11 +225,14 @@ func stickersKeyboard(store *StickerStore) *InlineKeyboardMarkup {
 		}
 		rows = append(rows, []InlineKeyboardButton{{Text: mark + " " + event, CallbackData: "sticker:event:" + event}})
 	}
+	if packURL != "" {
+		rows = append(rows, []InlineKeyboardButton{{Text: "🧪 Открыть CPT_Emoji", URL: packURL}})
+	}
 	rows = append(rows, []InlineKeyboardButton{{Text: "🛠️ В админку", CallbackData: "admin"}})
 	return keyboard(rows)
 }
 
-func stickerEventKeyboard(event string, hasValue bool) *InlineKeyboardMarkup {
+func stickerEventKeyboard(event string, hasValue bool, packURL string) *InlineKeyboardMarkup {
 	rows := [][]InlineKeyboardButton{
 		{{Text: "➕ Установить", CallbackData: "sticker:set:" + event}},
 	}
@@ -238,6 +241,9 @@ func stickerEventKeyboard(event string, hasValue bool) *InlineKeyboardMarkup {
 			{Text: "👁️ Предпросмотр", CallbackData: "sticker:preview:" + event},
 			{Text: "🧹 Очистить", CallbackData: "sticker:clear:" + event},
 		})
+	}
+	if packURL != "" {
+		rows = append(rows, []InlineKeyboardButton{{Text: "🧪 Открыть CPT_Emoji", URL: packURL}})
 	}
 	rows = append(rows, []InlineKeyboardButton{{Text: "⬅️ Стикеры", CallbackData: "stickers"}})
 	return keyboard(rows)

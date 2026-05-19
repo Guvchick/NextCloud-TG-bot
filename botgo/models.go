@@ -38,7 +38,12 @@ type Config struct {
 	UploadWorkers                int
 	QuotaCacheSeconds            int
 	StickerStoreFile             string
-	CustomEmojiPackURL           string
+	StickerPackURL               string
+	TelegramAPIBaseURL           string
+	TelegramFileBaseURL          string
+	TelegramLocalMode            bool
+	TelegramLocalPathPrefix      string
+	TelegramBotPathPrefix        string
 }
 
 type App struct {

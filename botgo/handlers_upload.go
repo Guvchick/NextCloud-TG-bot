@@ -97,14 +97,16 @@ func (a *App) processUpload(job UploadJob) {
 		return
 	}
 	a.batches.set(a, job, "downloading", "", "", "")
-	tmp, err := a.tg.DownloadFile(job.FileID)
+	tmp, cleanup, err := a.tg.DownloadFile(job.FileID)
 	if err != nil {
 		_ = a.sendEventSticker(job.ChatID, "error")
 		a.batches.set(a, job, "failed", "", fmt.Sprintf("Telegram не дает боту скачать файл. Лимит через бота: %d MB.", a.cfg.TelegramMaxDownloadMB), "")
 		log.Printf("telegram download failed: %v", err)
 		return
 	}
-	defer os.Remove(tmp)
+	if cleanup {
+		defer os.Remove(tmp)
+	}
 	a.batches.set(a, job, "uploading", "", "", "")
 	remote, err := a.nc.UploadFile(*user.NCUserID, *user.NCPassword, job.Filename, tmp)
 	if err != nil {

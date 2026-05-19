@@ -65,7 +65,7 @@ func (a *App) handleCallback(cb *CallbackQuery) {
 		a.states.Set(cb.From.ID, State{Kind: StateAdminSearch})
 		_, _ = a.tg.SendMessage(cb.Message.Chat.ID, "🔎 Отправьте Telegram ID или тег пользователя. Например: <code>8799317819</code> или <code>@username</code>.", usersMenuKeyboard())
 	case data == "stickers":
-		a.edit(cb, a.stickersText(), stickersKeyboard(a.stickers))
+		a.edit(cb, a.stickersText(), stickersKeyboard(a.stickers, a.cfg.StickerPackURL))
 	case strings.HasPrefix(data, "sticker:event:"):
 		a.stickerEvent(cb)
 	case strings.HasPrefix(data, "sticker:set:"):
@@ -234,11 +234,11 @@ func (a *App) renderSearch(chatID int64, query string) {
 
 func (a *App) setStickerStart(msg *Message, parts []string) {
 	if len(parts) != 2 || !stickerEventAllowed(parts[1]) {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, "Используйте: <code>/setsticker welcome</code> или настройте через кнопку ✨ Стикеры.", stickersKeyboard(a.stickers))
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Используйте: <code>/setsticker welcome</code> или настройте через кнопку ✨ Стикеры.", stickersKeyboard(a.stickers, a.cfg.StickerPackURL))
 		return
 	}
 	a.states.Set(msg.From.ID, State{Kind: StateSticker, Event: parts[1]})
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "Отправьте стикер или custom emoji для события <code>"+esc(parts[1])+"</code>.\n\nРекомендуемый набор: "+esc(a.cfg.CustomEmojiPackURL), stickerEventKeyboard(parts[1], false))
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "Отправьте стикер для события <code>"+esc(parts[1])+"</code>.\n\nТестовый пакет в проекте: "+esc(a.cfg.StickerPackURL), stickerEventKeyboard(parts[1], false, a.cfg.StickerPackURL))
 }
 
 func (a *App) saveSticker(msg *Message, st State) {
@@ -252,7 +252,7 @@ func (a *App) saveSticker(msg *Message, st State) {
 		id = customEmojiID
 	}
 	if id == "" {
-		_, _ = a.tg.SendMessage(msg.Chat.ID, "Нужно отправить стикер или custom emoji.", stickerEventKeyboard(st.Event, false))
+		_, _ = a.tg.SendMessage(msg.Chat.ID, "Нужно отправить стикер или custom emoji.", stickerEventKeyboard(st.Event, false, a.cfg.StickerPackURL))
 		return
 	}
 	if err := a.stickers.Set(st.Event, kind, id); err != nil {
@@ -260,7 +260,7 @@ func (a *App) saveSticker(msg *Message, st State) {
 		return
 	}
 	a.states.Clear(msg.From.ID)
-	_, _ = a.tg.SendMessage(msg.Chat.ID, "✨ Оформление для <code>"+esc(st.Event)+"</code> сохранено в файл. Если Telegram его отклонит, бот оставит базовый маркер "+eventMark(st.Event)+".", stickerEventKeyboard(st.Event, true))
+	_, _ = a.tg.SendMessage(msg.Chat.ID, "✨ Оформление для <code>"+esc(st.Event)+"</code> сохранено в файл. Если Telegram его отклонит, бот оставит базовый маркер "+eventMark(st.Event)+".", stickerEventKeyboard(st.Event, true, a.cfg.StickerPackURL))
 	_ = a.previewSticker(msg.Chat.ID, st.Event)
 }
 
@@ -278,7 +278,8 @@ func (a *App) stickersText() string {
 	}
 	return "<b>✨ Стикеры</b>\n\n" +
 		"Хранение: <code>" + esc(a.cfg.StickerStoreFile) + "</code>\n" +
-		"Рекомендуемый набор emoji: " + esc(a.cfg.CustomEmojiPackURL) + "\n\n" +
+		"Тестовый пакет: " + esc(a.cfg.StickerPackURL) + "\n" +
+		"Bot API не отдает file_id всего пака по ссылке, поэтому импорт идет через отправку нужного стикера боту.\n\n" +
 		line("welcome") + "\n" +
 		line("approved") + "\n" +
 		line("upload_ok") + "\n" +
@@ -303,8 +304,8 @@ func (a *App) stickerEvent(cb *CallbackQuery) {
 	if ok {
 		mode = value.Kind
 	}
-	text := "✨ <b>Оформление события</b>\n\nСобытие: <code>" + esc(event) + "</code>\nТекущее: <b>" + esc(mode) + "</b>\n\nМожно поставить обычный Telegram-стикер или custom emoji из набора:\n" + esc(a.cfg.CustomEmojiPackURL)
-	a.edit(cb, text, stickerEventKeyboard(event, ok))
+	text := "✨ <b>Оформление события</b>\n\nСобытие: <code>" + esc(event) + "</code>\nТекущее: <b>" + esc(mode) + "</b>\n\nМожно поставить обычный Telegram-стикер из тестового пакета:\n" + esc(a.cfg.StickerPackURL)
+	a.edit(cb, text, stickerEventKeyboard(event, ok, a.cfg.StickerPackURL))
 }
 
 func (a *App) stickerSetFromButton(cb *CallbackQuery) {
@@ -314,7 +315,7 @@ func (a *App) stickerSetFromButton(cb *CallbackQuery) {
 		return
 	}
 	a.states.Set(cb.From.ID, State{Kind: StateSticker, Event: event})
-	a.edit(cb, "➕ <b>Установка оформления</b>\n\nОтправьте следующим сообщением Telegram-стикер или custom emoji для события <code>"+esc(event)+"</code>.\n\nНабор: "+esc(a.cfg.CustomEmojiPackURL), stickerEventKeyboard(event, false))
+	a.edit(cb, "➕ <b>Установка оформления</b>\n\nОтправьте следующим сообщением Telegram-стикер или custom emoji для события <code>"+esc(event)+"</code>.\n\nПак: "+esc(a.cfg.StickerPackURL), stickerEventKeyboard(event, false, a.cfg.StickerPackURL))
 }
 
 func (a *App) stickerPreview(cb *CallbackQuery) {
@@ -346,7 +347,7 @@ func (a *App) stickerClear(cb *CallbackQuery) {
 		a.tg.AnswerCallback(cb.ID, "Не удалось очистить", true)
 		return
 	}
-	a.edit(cb, "🧹 Оформление для <code>"+esc(event)+"</code> очищено. Остался базовый маркер "+eventMark(event)+".", stickerEventKeyboard(event, false))
+	a.edit(cb, "🧹 Оформление для <code>"+esc(event)+"</code> очищено. Остался базовый маркер "+eventMark(event)+".", stickerEventKeyboard(event, false, a.cfg.StickerPackURL))
 }
 
 func (a *App) usersList(cb *CallbackQuery) {

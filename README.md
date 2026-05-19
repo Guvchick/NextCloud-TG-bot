@@ -45,6 +45,11 @@ cp .env.example .env
 # Telegram bot
 BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789,987654321
+TELEGRAM_API_BASE_URL=https://api.telegram.org
+TELEGRAM_FILE_BASE_URL=https://api.telegram.org/file
+TELEGRAM_LOCAL_MODE=false
+TELEGRAM_LOCAL_PATH_PREFIX=
+TELEGRAM_BOT_PATH_PREFIX=
 
 # Nextcloud
 NEXTCLOUD_URL=https://cloud.example.com
@@ -96,12 +101,23 @@ QUOTA_CACHE_SECONDS=45
 TELEGRAM_MAX_DOWNLOAD_MB=20
 PREMIUM_DAYS=30
 
-# Stickers and custom emoji
+# Stickers
 STICKER_STORE_FILE=data/stickers.json
-CUSTOM_EMOJI_PACK_URL=https://t.me/addemoji/CPT_Emoji
+STICKER_PACK_URL=https://t.me/addemoji/CPT_Emoji
 ```
 
 `ADMIN_IDS` - это Telegram ID администраторов через запятую.
+
+`TELEGRAM_API_BASE_URL` и `TELEGRAM_FILE_BASE_URL` по умолчанию используют публичный Bot API. Для локального `tdlib/telegram-bot-api` или `tdlight-team/tdlight-telegram-bot-api` обычно ставят:
+
+```env
+TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081
+TELEGRAM_FILE_BASE_URL=http://telegram-bot-api:8081/file
+TELEGRAM_LOCAL_MODE=true
+TELEGRAM_MAX_DOWNLOAD_MB=2000
+```
+
+В `--local` режиме `getFile` может вернуть абсолютный путь к файлу на локальном Bot API сервере. Если бот видит тот же volume по другому пути, задайте маппинг: `TELEGRAM_LOCAL_PATH_PREFIX=/var/lib/telegram-bot-api` и `TELEGRAM_BOT_PATH_PREFIX=/telegram-bot-api-data`.
 
 `NEXTCLOUD_URL` - публичный адрес, который бот показывает пользователям.
 
@@ -131,13 +147,13 @@ Telegram-бот запускается как Go-бинарник из `botgo`. 
 
 Для Platega можно задать статическую ссылку `PLATEGA_URL`, либо включить API-создание ссылок через `PLATEGA_MERCHANT_ID` и `PLATEGA_SECRET`. По документации Platega запросы идут на `https://app.platega.io/`, платежная ссылка создается через `POST /v2/transaction/process`, а статус проверяется через `GET /transaction/{id}`. `PLATEGA_AMOUNTS_RUB` задает суммы в рублях, `PLATEGA_RETURN_URL` и `PLATEGA_FAILED_URL` передаются в платеж при создании.
 
-`TELEGRAM_MAX_DOWNLOAD_MB` - лимит скачивания через Bot API. Если Telegram не дает скачать большой файл, бот заранее объяснит это пользователю и предложит загрузить файл напрямую через Nextcloud.
+`TELEGRAM_MAX_DOWNLOAD_MB` - лимит скачивания через Bot API. Для публичного `api.telegram.org` оставляйте около `20`; для локального Bot API в `--local` режиме можно ставить до `2000`.
 
 `UPLOAD_WORKERS` - количество параллельных обработчиков очереди загрузок. Премиум-пользователи все равно получают более высокий приоритет. `QUOTA_CACHE_SECONDS` - кеш статистики места по каждому отдельному Nextcloud-пользователю, чтобы админка и `/start` не подвисали на каждом WebDAV-запросе.
 
 `PREMIUM_DAYS` - срок действия премиум-иконки после Telegram Stars, Platega или ручной выдачи админом. По умолчанию `30`, то есть примерно один месяц.
 
-`STICKER_STORE_FILE` - JSON-файл, где бот хранит кастомные Telegram-стикеры и custom emoji, чтобы они не сбрасывались после перезапуска. Настройка доступна в админке через `✨ Стикеры`: выбрать событие, отправить стикер или custom emoji, посмотреть предпросмотр или очистить. `CUSTOM_EMOJI_PACK_URL` показывает админам рекомендуемый набор, по умолчанию `https://t.me/addemoji/CPT_Emoji`.
+`STICKER_STORE_FILE` - JSON-файл, где бот хранит кастомные Telegram-стикеры и custom emoji, чтобы они не сбрасывались после перезапуска. Настройка доступна в админке через `✨ Стикеры`: выбрать событие, отправить стикер или custom emoji, посмотреть предпросмотр или очистить. `STICKER_PACK_URL` показывает админам тестовый пакет, по умолчанию `https://t.me/addemoji/CPT_Emoji`. Bot API не позволяет импортировать все `file_id` пака по ссылке, поэтому нужный стикер надо отправить боту один раз.
 
 ## Запуск локально
 
