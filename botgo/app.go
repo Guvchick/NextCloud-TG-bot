@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -88,16 +89,25 @@ func main() {
 	if err := app.db.Init(); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
-	log.Printf("bot started: nextcloud_public=%s nextcloud_internal=%s postgres=%s/%s telegram_api=%s telegram_local_mode=%v upload_workers=%d quota_cache_seconds=%d", cfg.NextcloudURL, cfg.NextcloudInternalURL, env("POSTGRES_HOST", "postgres"), env("POSTGRES_DB", "bot"), cfg.TelegramAPIBaseURL, cfg.TelegramLocalMode, cfg.UploadWorkers, cfg.QuotaCacheSeconds)
+	log.Printf("bot started | nextcloud_public=%s nextcloud_internal=%s postgres=%s/%s telegram_api=%s telegram_local_mode=%v upload_workers=%d quota_cache_seconds=%d", cfg.NextcloudURL, cfg.NextcloudInternalURL, env("POSTGRES_HOST", "postgres"), env("POSTGRES_DB", "bot"), cfg.TelegramAPIBaseURL, cfg.TelegramLocalMode, cfg.UploadWorkers, cfg.QuotaCacheSeconds)
 	app.logRuntimeHints()
+	app.notifyStartup()
 
 	for i := 0; i < cfg.UploadWorkers; i++ {
-		go app.uploadWorker(i + 1)
+		workerID := i + 1
+		app.safeGo(fmt.Sprintf("upload-worker-%d", workerID), func() { app.uploadWorker(workerID) })
 	}
-	go app.autoBackupLoop()
-	go app.nextcloudSyncLoop()
-	go app.premiumExpirationLoop()
-	go app.startWebhookServer()
+	app.safeGo("auto-backup", app.autoBackupLoop)
+	app.safeGo("nextcloud-sync", app.nextcloudSyncLoop)
+	app.safeGo("premium-expiration", app.premiumExpirationLoop)
+	app.safeGo("webhook-server", app.startWebhookServer)
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			log.Printf("panic in poll loop: %v\n%s", r, string(stack))
+			app.notifyCrash("poll-loop", r, stack)
+		}
+	}()
 	app.poll()
 }
 
@@ -163,7 +173,9 @@ func (a *App) poll() {
 func (a *App) handleUpdate(update Update) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("panic while handling update %d: %v", update.UpdateID, r)
+			stack := debug.Stack()
+			log.Printf("panic while handling update %d: %v\n%s", update.UpdateID, r, string(stack))
+			a.notifyCrash(fmt.Sprintf("update:%d", update.UpdateID), r, stack)
 		}
 	}()
 	if update.PreCheckoutQuery != nil {

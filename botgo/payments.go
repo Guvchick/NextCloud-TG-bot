@@ -16,14 +16,15 @@ func (a *App) startWebhookServer() {
 		return
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc(a.cfg.PlategaWebhookPath, a.plategaWebhook)
-	mux.HandleFunc(a.cfg.PallyCallbackPath, a.pallyWebhook)
-	mux.HandleFunc(a.cfg.CryptoBotWebhookPath, a.cryptoBotWebhook)
-	mux.HandleFunc(a.cfg.HeleketWebhookPath, a.heleketWebhook)
+	mux.HandleFunc(a.cfg.PlategaWebhookPath, a.recoverHTTP("platega", a.plategaWebhook))
+	mux.HandleFunc(a.cfg.PallyCallbackPath, a.recoverHTTP("pally", a.pallyWebhook))
+	mux.HandleFunc(a.cfg.CryptoBotWebhookPath, a.recoverHTTP("cryptobot", a.cryptoBotWebhook))
+	mux.HandleFunc(a.cfg.HeleketWebhookPath, a.recoverHTTP("heleket", a.heleketWebhook))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	log.Printf("webhook server listening: addr=%s platega_path=%s pally_path=%s cryptobot_path=%s heleket_path=%s callback_url=%s", a.cfg.WebhookListenAddr, a.cfg.PlategaWebhookPath, a.cfg.PallyCallbackPath, a.cfg.CryptoBotWebhookPath, a.cfg.HeleketWebhookPath, a.cfg.PlategaCallbackURL)
 	if err := http.ListenAndServe(a.cfg.WebhookListenAddr, mux); err != nil {
 		log.Printf("webhook server stopped: %v", err)
+		a.notifyAdmins("🔴 <b>Webhook-сервер остановился</b>\n\nОшибка: <code>" + esc(err.Error()) + "</code>")
 	}
 }
 

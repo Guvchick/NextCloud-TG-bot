@@ -31,7 +31,7 @@
 - Есть синхронизация с Nextcloud: если пользователя уже нет в Nextcloud, запись удаляется из базы бота.
 - Есть PostgreSQL + Redis: PostgreSQL хранит пользователей/платежи/настройки, Redis хранит временные Telegram-состояния.
 - Есть сжатые PostgreSQL/JSON-бекапы, восстановление из PostgreSQL-бекапа, авто-бекап и чистка старых файлов.
-- Есть логи в stdout и `./logs/bot-go.log`.
+- Есть красивые логи в stdout и `./logs/bot-go.log`, плюс уведомления админам о запуске и крашах.
 - Есть панель бекапов: PostgreSQL-дамп или JSON-экспорт отправляются в Telegram.
 - Есть рассылка по всем активным одобренным пользователям.
 
@@ -79,6 +79,8 @@ DATABASE_SECRET_KEY=
 BACKUP_DIR=backups
 LOG_DIR=logs
 LOG_LEVEL=info
+NOTIFY_ADMINS_ON_START=true
+NOTIFY_ADMINS_ON_CRASH=true
 
 # User interface blocks
 ENABLE_SUPPORT_BLOCK=true
@@ -221,6 +223,10 @@ docker compose up -d --build
 ```
 
 Данные PostgreSQL хранятся в Docker volume `postgres_data`, Redis - в `redis_data`, локальный Telegram Bot API - в `telegram_bot_api_data`, бекапы - в `./backups`, логи - в `./logs`, стикеры/custom emoji и тексты - в `./data`.
+
+Логи пишутся в едином красивом формате с timestamp, уровнем `INFO/WARN/ERROR` и понятным маркером. `LOG_LEVEL` поддерживает `debug`, `info`, `warn`, `error`.
+
+`NOTIFY_ADMINS_ON_START=true` отправляет администраторам сообщение в ЛС при успешном запуске. `NOTIFY_ADMINS_ON_CRASH=true` отправляет panic/crash-уведомления со стеком из Telegram-обработчиков, webhook-ов и фоновых задач.
 
 ## Команды
 

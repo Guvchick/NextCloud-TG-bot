@@ -4,7 +4,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -82,16 +81,20 @@ func loadConfig() Config {
 		TelegramBotPathPrefix:        strings.TrimRight(env("TELEGRAM_BOT_PATH_PREFIX", ""), "/"),
 		ContentStoreFile:             env("CONTENT_STORE_FILE", "data/content.json"),
 		LogLevel:                     strings.ToLower(env("LOG_LEVEL", "info")),
+		NotifyAdminsOnStart:         envBool("NOTIFY_ADMINS_ON_START", true),
+		NotifyAdminsOnCrash:         envBool("NOTIFY_ADMINS_ON_CRASH", true),
 	}
 }
 
 func configureLogging(cfg Config) {
 	_ = os.MkdirAll(cfg.LogDir, 0o755)
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	file, err := os.OpenFile(filepath.Join(cfg.LogDir, "bot-go.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	log.SetFlags(0)
+	file, err := os.OpenFile(logFilePath(cfg.LogDir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err == nil {
-		log.SetOutput(io.MultiWriter(os.Stdout, file))
+		log.SetOutput(NewPrettyLogWriter(io.MultiWriter(os.Stdout, file), cfg.LogLevel))
+		return
 	}
+	log.SetOutput(NewPrettyLogWriter(os.Stdout, cfg.LogLevel))
 }
 
 func loadDotEnv(path string) {

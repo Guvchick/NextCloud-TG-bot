@@ -64,6 +64,8 @@ type Config struct {
 	TelegramBotPathPrefix        string
 	ContentStoreFile             string
 	LogLevel                     string
+	NotifyAdminsOnStart         bool
+	NotifyAdminsOnCrash         bool
 }
 
 type App struct {
