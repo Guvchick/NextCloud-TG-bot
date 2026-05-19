@@ -2,6 +2,7 @@ FROM golang:1.22-bookworm AS build
 
 WORKDIR /src
 COPY botgo/go.mod ./
+COPY botgo/go.sum ./
 COPY botgo/ ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/telegram-nextcloud-bot .
 
